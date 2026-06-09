@@ -1,0 +1,25 @@
+{{define "title"}}{{.SiteName}} — Change password{{end}}
+{{define "content"}}
+<section class="card">
+  <h1>{{if .Forced}}Set a new password{{else}}Change password{{end}}</h1>
+  {{if .Forced}}<p class="lede">For security, please choose a new password before continuing.</p>{{end}}
+  {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+  <form method="POST" action="/account/password">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-row">
+      <label for="current">Current password</label>
+      <input id="current" type="password" name="current" autocomplete="current-password" required>
+    </div>
+    <div class="form-row">
+      <label for="new">New password</label>
+      <input id="new" type="password" name="new" autocomplete="new-password" minlength="12" required>
+    </div>
+    <div class="form-row">
+      <label for="confirm">Confirm new password</label>
+      <input id="confirm" type="password" name="confirm" autocomplete="new-password" minlength="12" required>
+    </div>
+    <button class="btn primary" type="submit">Update password</button>
+  </form>
+  {{if not .Forced}}<p style="margin-top:12px"><a href="/auth.html">Back to dashboard</a></p>{{end}}
+</section>
+{{end}}

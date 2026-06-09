@@ -1,0 +1,31 @@
+{{define "title"}}{{.SiteName}} — Accept invitation{{end}}
+{{define "content"}}
+<section class="card">
+  {{if .Invalid}}
+    <h1>Invitation not valid</h1>
+    <p class="lede">This invitation link is invalid, has expired, or has already been used. Ask an admin to send a new one.</p>
+  {{else}}
+    <h1>Accept your invitation</h1>
+    <p class="lede">Set up your account for {{.SiteName}}{{if .Ref}} — {{.Ref}}{{end}}.</p>
+    {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+    <form method="POST" action="/invite?ref={{.Ref}}&t={{.Token}}">
+      <input type="hidden" name="csrf" value="{{.FormCSRF}}">
+      <input type="hidden" name="ref" value="{{.Ref}}">
+      <input type="hidden" name="t" value="{{.Token}}">
+      <div class="form-row">
+        <label for="username">Username</label>
+        <input id="username" name="username" value="{{.Username}}" {{if .PresetUsername}}readonly{{end}} autocomplete="username" required>
+      </div>
+      <div class="form-row">
+        <label for="new">Password</label>
+        <input id="new" type="password" name="new" minlength="12" autocomplete="new-password" required>
+      </div>
+      <div class="form-row">
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" type="password" name="confirm" minlength="12" autocomplete="new-password" required>
+      </div>
+      <button class="btn primary" type="submit">Create account</button>
+    </form>
+  {{end}}
+</section>
+{{end}}

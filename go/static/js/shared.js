@@ -1,0 +1,408 @@
+// js/shared.js
+// Shared utilities for both auth and guest pages.
+// Exposed as window.Shared. Uses window.Realtime + window.DB (see config.js).
+
+window.Shared = (() => {
+  // ─── URL Params ──────────────────────────────────────────────────────────
+  function getUrlParams() {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      auth: p.get("auth") === "true",
+      admin: p.get("admin") === "true",
+      ref: p.get("ref") || "",
+      name: p.get("name") || "",
+      email: p.get("email") || "Unknown",
+    };
+  }
+
+  /**
+   * If the `name` URL parameter is missing, prompt the user for their name
+   * and reload the page with it added to the URL.
+   * Returns true if a redirect is happening (caller should stop execution).
+   */
+  function ensureNameParam() {
+    const p = new URLSearchParams(window.location.search);
+    if (!p.get("name")) {
+      const name = prompt("Please enter your name:");
+      if (name && name.trim()) {
+        p.set("name", name.trim());
+        window.location.search = p.toString();
+      }
+      return true; // redirect in progress or user cancelled
+    }
+    return false;
+  }
+
+  // ─── ID Generation ───────────────────────────────────────────────────────
+  function generateId() {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) {
+      return crypto.randomUUID();
+    }
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  // ─── HTML Escaping ───────────────────────────────────────────────────────
+  function escapeHtml(str) {
+    return String(str).replace(
+      /[&<>"']/g,
+      (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+    );
+  }
+
+  // ─── Avatar markup ─────────────────────────────────────────────────────────
+  // Returns a small avatar element: the uploaded picture if `picture` is set,
+  // otherwise a circular placeholder showing the name's first initial. `size`
+  // adds a modifier class (e.g. "avatar--lg") so callers can scale it via CSS.
+  // All inputs are escaped — `picture` is a same-origin /api/avatar URL.
+  function avatarHtml(name, picture, size) {
+    const sizeClass = size ? ` avatar--${escapeHtml(size)}` : "";
+    const initial = (String(name || "?").trim().charAt(0) || "?").toUpperCase();
+    if (picture) {
+      return `<span class="avatar${sizeClass}"><img class="avatar__img" src="${escapeHtml(picture)}" alt="" /></span>`;
+    }
+    return `<span class="avatar avatar--placeholder${sizeClass}">${escapeHtml(initial)}</span>`;
+  }
+
+  // ─── Dashboard refresh ───────────────────────────────────────────────────
+  // The Go server broadcasts a "refresh" event on dashboard:<ref> after every
+  // DB write, so client-side notification is no longer needed. Kept as a
+  // no-op so existing call sites don't break.
+  let currentRef = "";
+  function rememberRef(ref) {
+    if (ref) currentRef = ref;
+  }
+  function knownRef() {
+    return currentRef || getUrlParams().ref || "";
+  }
+  async function notifyDashboardRefresh(_ref, _table) {
+    // Handled server-side now. No-op.
+  }
+
+  // ─── Session Management ──────────────────────────────────────────────────
+  async function createSession({ sessionId, ref, email, name, role, hasCamera, hasMic }) {
+    rememberRef(ref);
+    const { error } = await window.DB.upsertSession({
+      session_id: sessionId,
+      ref,
+      email,
+      name,
+      role,
+      status: "available",
+      has_camera: hasCamera,
+      has_mic: hasMic,
+    });
+    if (error) console.error("[Session] Create error:", error.message);
+  }
+
+  async function updateSessionStatus(sessionId, status) {
+    const { error } = await window.DB.updateSession(sessionId, { status });
+    if (error) console.error("[Session] Update status error:", error.message);
+  }
+
+  async function updateSessionCapabilities(sessionId, hasCamera, hasMic) {
+    const { error } = await window.DB.updateSession(sessionId, {
+      has_camera: hasCamera,
+      has_mic: hasMic,
+    });
+    if (error) console.error("[Session] Update capabilities error:", error.message);
+  }
+
+  function setupHeartbeat(sessionId) {
+    return setInterval(async () => {
+      // Empty PATCH bumps last_seen_at server-side.
+      const { error } = await window.DB.updateSession(sessionId, {});
+      if (error) console.error("[Heartbeat] Error:", error.message);
+    }, 30000);
+  }
+
+  // ─── Media Permissions ───────────────────────────────────────────────────
+  async function checkMediaPermissions() {
+    const result = { hasMic: false, hasCamera: false };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      result.hasMic = true;
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      return result; // No mic — stop here
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      result.hasCamera = true;
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      // No camera is OK
+    }
+    return result;
+  }
+
+  // ─── Presence ────────────────────────────────────────────────────────────
+  function joinPresenceChannel(ref, sessionData, onSync) {
+    const channel = window.Realtime.channel(`presence:${ref}`, {
+      config: { presence: { key: sessionData.session_id } },
+    });
+
+    channel
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState();
+        // Deduplicate by session_id so the UI never shows a user twice.
+        const seen = new Set();
+        const users = Object.values(state)
+          .flat()
+          .filter((u) => {
+            if (seen.has(u.session_id)) return false;
+            seen.add(u.session_id);
+            return true;
+          });
+        onSync(users);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await channel.track(sessionData);
+        }
+      });
+
+    return channel;
+  }
+
+  async function updatePresence(channel, sessionData) {
+    try {
+      await channel.track(sessionData);
+    } catch (e) {
+      console.error("[Presence] Update error:", e.message);
+    }
+  }
+
+  // ─── Inbox (point-to-point messaging) ───────────────────────────────────
+  // Each user subscribes to their own inbox channel to receive call invitations.
+  function subscribeToInbox(sessionId, onMessage) {
+    const channel = window.Realtime.channel(`inbox:${sessionId}`);
+    channel
+      .on("broadcast", { event: "message" }, ({ payload }) => {
+        onMessage(payload);
+      })
+      .subscribe();
+    return channel;
+  }
+
+  async function sendToInbox(targetSessionId, data) {
+    // The in-process hub relays broadcasts to current subscribers without
+    // requiring the sender to subscribe first — no subscribe/publish race.
+    try {
+      const ok = await window.Realtime.publish(`inbox:${targetSessionId}`, "message", data);
+      if (!ok) console.warn("[Inbox] Send failed (socket not open)");
+    } catch (e) {
+      console.error("[Inbox] sendToInbox error:", e.message);
+    }
+  }
+
+  // ─── Instant Messaging (text chat over the inbox channel) ───────────────
+  // IM reuses the same point-to-point inbox channel as call invitations. A
+  // chat line is just an inbox payload with type:"im", so a recipient's
+  // existing subscribeToInbox handler can branch on payload.type.
+  //
+  // Security note: the carrier is the recipient's own inbox channel keyed by
+  // their session_id. A guest therefore only ever learns an admin's
+  // session_id because that admin messaged them first — guests are never sent
+  // the admin roster and cannot enumerate or cold-message admins.
+  async function sendIM(targetSessionId, { fromId, fromName, fromRole, fromPicture, text }) {
+    return sendToInbox(targetSessionId, {
+      type: "im",
+      fromId,
+      fromName,
+      fromRole,
+      fromPicture: fromPicture || "",
+      text,
+      ts: new Date().toISOString(),
+    });
+  }
+
+  // ─── Call Signaling Channel ──────────────────────────────────────────────
+  function setupCallChannel(callId, onMessage) {
+    const channel = window.Realtime.channel(`call:${callId}`);
+    channel
+      .on("broadcast", { event: "signal" }, ({ payload }) => {
+        onMessage(payload);
+      })
+      .subscribe();
+    return channel;
+  }
+
+  async function sendCallSignal(callChannel, data) {
+    try {
+      await callChannel.send({
+        type: "broadcast",
+        event: "signal",
+        payload: data,
+      });
+    } catch (e) {
+      console.error("[Signal] Send error:", e.message);
+    }
+  }
+
+  // ─── ICE Config ──────────────────────────────────────────────────────────
+  async function getIceConfig() {
+    try {
+      const resp = await fetch("/ice-config");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.json();
+    } catch (e) {
+      console.warn("[ICE] Falling back to public STUN:", e.message);
+      return {
+        iceServers: [
+          { urls: "stun:stun.cloudflare.com:3478" },
+          { urls: "stun:stun.l.google.com:19302" },
+        ],
+      };
+    }
+  }
+
+  // ─── WebRTC ──────────────────────────────────────────────────────────────
+  function createPeerConnection({ iceConfig, onIceCandidate, onTrack, onConnectionStateChange }) {
+    const pc = new RTCPeerConnection(iceConfig);
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) onIceCandidate(candidate);
+    };
+
+    pc.ontrack = ({ streams }) => {
+      if (streams && streams[0]) onTrack(streams[0]);
+    };
+
+    if (onConnectionStateChange) {
+      pc.onconnectionstatechange = () => onConnectionStateChange(pc.connectionState);
+    }
+
+    return pc;
+  }
+
+  // ─── Call Records ─────────────────────────────────────────────────────────
+  async function createCallRecord({
+    callId,
+    ref,
+    callerSessionId,
+    callerName,
+    calleeSessionId,
+    calleeName,
+    callType,
+  }) {
+    const { error } = await window.DB.insertCall({
+      call_id: callId,
+      ref,
+      caller: callerSessionId,
+      caller_name: callerName,
+      callee: calleeSessionId,
+      callee_name: calleeName,
+      type: callType,
+    });
+    if (error) console.error("[Call] Create record error:", error.message);
+  }
+
+  async function updateCallRecord(callId, updates) {
+    const { error } = await window.DB.updateCall(callId, updates);
+    if (error) console.error("[Call] Update record error:", error.message);
+  }
+
+  // ─── Message Records ──────────────────────────────────────────────────────
+  async function createMessage({ ref, name, contact, message }) {
+    const messageId = generateId();
+    const { error } = await window.DB.insertMessage({
+      message_id: messageId,
+      ref,
+      name,
+      contact,
+      message,
+    });
+    if (error) {
+      console.error("[Message] Create error:", error.message);
+      return false;
+    }
+    return true;
+  }
+
+  // ─── Ringtone ─────────────────────────────────────────────────────────────
+  let ringtoneAudio = null;
+
+  function playRingtone() {
+    if (ringtoneAudio) return;
+    ringtoneAudio = new Audio("/public/ring.mp3");
+    ringtoneAudio.loop = true;
+    ringtoneAudio.play().catch((e) => console.warn("[Ringtone] Play failed:", e.message));
+  }
+
+  function stopRingtone() {
+    if (!ringtoneAudio) return;
+    ringtoneAudio.pause();
+    ringtoneAudio.currentTime = 0;
+    ringtoneAudio = null;
+  }
+
+  // ─── Time Formatting ──────────────────────────────────────────────────────
+  function formatWaitTime(isoString) {
+    const ms = Date.now() - new Date(isoString).getTime();
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  function formatDuration(seconds) {
+    if (seconds == null) return "";
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
+  }
+
+  // ─── Section Visibility ────────────────────────────────────────────────────
+  function showSection(selector) {
+    const el = document.querySelector(selector);
+    if (el) el.style.display = "";
+  }
+
+  function hideSection(selector) {
+    const el = document.querySelector(selector);
+    if (el) el.style.display = "none";
+  }
+
+  function hideAllSections() {
+    document.querySelectorAll("main > section").forEach((s) => {
+      s.style.display = "none";
+    });
+  }
+
+  return {
+    getUrlParams,
+    ensureNameParam,
+    generateId,
+    escapeHtml,
+    avatarHtml,
+    createSession,
+    updateSessionStatus,
+    updateSessionCapabilities,
+    setupHeartbeat,
+    checkMediaPermissions,
+    joinPresenceChannel,
+    updatePresence,
+    subscribeToInbox,
+    sendToInbox,
+    sendIM,
+    setupCallChannel,
+    sendCallSignal,
+    getIceConfig,
+    createPeerConnection,
+    createCallRecord,
+    updateCallRecord,
+    createMessage,
+    notifyDashboardRefresh,
+    playRingtone,
+    stopRingtone,
+    formatWaitTime,
+    formatDuration,
+    showSection,
+    hideSection,
+    hideAllSections,
+  };
+})();

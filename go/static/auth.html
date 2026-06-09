@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/public/css/normalize.css" />
+    <link rel="stylesheet" href="/public/css/index.css" />
+    <link
+      rel="icon"
+      href="/public/favicon.svg"
+      sizes="any"
+      type="image/svg+xml"
+    />
+    <title>Dashboard</title>
+  </head>
+  <body>
+    <!-- Session check loading screen — shown while auth.js confirms the
+         signed-in session (/api/me). Hidden on success; signed-out visitors
+         are redirected to /login. -->
+    <div id="auth-loading" style="display: flex">
+      <div class="auth-spinner"></div>
+      <p class="auth-loading-text">Verifying access...</p>
+    </div>
+
+    <!-- Optional passcode gate — shown before the session check only when the
+         server has AGENT_PASSCODE set and this browser hasn't passed yet. -->
+    <div id="auth-gate" style="display: none">
+      <p class="auth-gate-icon">🔑</p>
+      <h2 class="auth-gate-title">Enter passcode</h2>
+      <p class="auth-gate-subtitle">This dashboard is protected. Enter the access passcode to continue.</p>
+      <form id="auth-gate-form" class="auth-gate-form">
+        <input
+          id="auth-gate-input"
+          class="auth-gate-input"
+          type="password"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Passcode"
+        />
+        <button type="submit" class="auth-gate-submit">Continue</button>
+        <p id="auth-gate-error" class="auth-gate-error"></p>
+      </form>
+    </div>
+
+    <!-- Shown when access cannot be granted -->
+    <div id="auth-denied" style="display: none">
+      <p class="auth-denied-icon">🔒</p>
+      <h2 class="auth-denied-title">Access Denied</h2>
+      <p id="auth-denied-reason">
+        Your session is invalid or has expired. Please
+        <a href="/login">sign in</a> and try again.
+      </p>
+    </div>
+
+    <!-- Auth user -->
+    <main class="auth-user" style="display: none">
+      <!-- Active call with a guest user -->
+      <section class="call-active" style="display: none">
+        <!-- Peer name overlay -->
+        <p class="call-active-name">Speaking with 
+          <span class="guest-user-name"></span>
+        </p>
+        <!-- Remote video (main) -->
+        <video class="remote-video" autoplay playsinline></video>
+        <!-- Local video (picture-in-picture) -->
+        <video
+          class="local-video"
+          autoplay
+          playsinline
+          muted
+          style="display: none"
+        ></video>
+        <!-- End call button -->
+        <button class="end-call-button">End call</button>
+      </section>
+
+      <!-- Greeting -->
+      <section class="greeting">
+        <h1>Hello,</h1>
+        <div class="availability">
+          <label class="availability__switch">
+            <!-- Disabled until auth.js wires up the change handler so an
+                 early click can't flip the UI without a real status update. -->
+            <input type="checkbox" id="availability-toggle" checked disabled />
+            <span class="availability__slider"></span>
+          </label>
+          <span class="availability__label">Available for calls</span>
+          <span class="availability__state" id="availability-state">✅</span>
+        </div>
+        <!-- Public display name shown to guests during calls and chat.
+             Disabled until auth.js wires up the input. -->
+        <div class="display-name">
+          <label class="display-name__label" for="display-name-input">
+            Display name (shown to guests)
+          </label>
+          <input
+            type="text"
+            id="display-name-input"
+            class="display-name__input"
+            maxlength="60"
+            placeholder="e.g. Alex from Support"
+            disabled
+          />
+        </div>
+        <!-- Profile picture shown to guests during calls and chat. Disabled
+             until auth.js wires up the file input. -->
+        <div class="profile-picture">
+          <span class="profile-picture__label">Profile picture (shown to guests)</span>
+          <div class="profile-picture__row">
+            <span class="avatar avatar--lg" aria-hidden="true">
+              <img id="avatar-preview" class="avatar__img" alt="" style="display: none" />
+              <span id="avatar-initial" class="avatar__initial">?</span>
+            </span>
+            <div class="profile-picture__controls">
+              <label class="profile-picture__btn">
+                Choose image
+                <input
+                  type="file"
+                  id="avatar-input"
+                  accept="image/jpeg,image/png"
+                  disabled
+                />
+              </label>
+              <button type="button" id="avatar-remove" style="display: none">
+                Remove
+              </button>
+              <span id="avatar-status" class="profile-picture__status"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Make a call to an guest user -->
+      <section class="call" style="display: none">
+        <h1>Online</h1>
+        <!-- List of online users -->
+        <ul class="call-guest-users">
+          <!-- Populated by JS -->
+        </ul>
+      </section>
+
+      <!-- Instant Messaging (admin view: full roster of online users).
+           Docked bottom-right; click the header bar to minimize/expand. -->
+      <section class="im" style="display: none">
+        <button type="button" class="im-dock-header">
+          <span class="im-dock-title">Online (0)</span>
+          <span class="im-dock-unread" style="display: none">0</span>
+          <span class="im-dock-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="im-body">
+          <div class="im-layout">
+            <!-- Left: people online (guests + admins, same ref) + open threads -->
+            <div class="im-sidebar">
+              <h2 class="im-sidebar-title">Online</h2>
+              <ul class="im-roster">
+                <!-- Populated by JS -->
+              </ul>
+            </div>
+            <!-- Right: active conversation -->
+            <div class="im-thread">
+              <div class="im-thread-header">
+                <span class="im-thread-name">Select someone to chat</span>
+              </div>
+              <ul class="im-messages">
+                <!-- Populated by JS -->
+              </ul>
+              <form class="im-form" autocomplete="off">
+                <input
+                  type="text"
+                  class="im-input"
+                  placeholder="Type…"
+                  disabled
+                />
+                <button type="submit" class="im-send" disabled>Send</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- History -->
+      <section class="logs" style="display: none">
+        <h1>History</h1>
+
+        <!-- Calls -->
+        <section class="log-calls">
+          <div class="log-section-header">
+            <h2>Calls</h2>
+            <button
+              class="delete-all-btn"
+              id="delete-all-calls"
+              style="display: none"
+            >
+              Delete All
+            </button>
+          </div>
+          <table class="log-calls-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Type</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Rows populated by JS -->
+            </tbody>
+          </table>
+          <div class="log-pagination" id="calls-pagination"></div>
+        </section>
+        <!-- Messages -->
+        <section class="log-messages">
+          <div class="log-section-header">
+            <h2>Messages</h2>
+            <button
+              class="delete-all-btn"
+              id="delete-all-messages"
+              style="display: none"
+            >
+              Delete All
+            </button>
+          </div>
+          <table class="log-messages-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Message</th>
+                <th>Time</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Rows populated by JS -->
+            </tbody>
+          </table>
+          <div class="log-pagination" id="messages-pagination"></div>
+        </section>
+
+        <!-- Sessions -->
+        <section class="log-sessions">
+          <div class="log-section-header">
+            <h2>Sessions</h2>
+            <button
+              class="delete-all-btn"
+              id="delete-all-sessions"
+              style="display: none"
+            >
+              Delete All
+            </button>
+          </div>
+          <table class="log-sessions-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>Email</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Logged in</th>
+                <th>Last seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Rows populated by JS -->
+            </tbody>
+          </table>
+          <div class="log-pagination" id="sessions-pagination"></div>
+        </section>
+
+        <!-- Admin Sessions -->
+        <section class="log-admin-sessions">
+          <div class="log-section-header">
+            <h2>Admin Sessions</h2>
+            <button
+              class="delete-all-btn"
+              id="delete-all-admin-sessions"
+              style="display: none"
+            >
+              Delete All
+            </button>
+          </div>
+          <table class="log-admin-sessions-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Source</th>
+                <th>Email</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Logged in</th>
+                <th>Last seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Rows populated by JS -->
+            </tbody>
+          </table>
+          <div class="log-pagination" id="admin-sessions-pagination"></div>
+        </section>
+      </section>
+
+      <!-- Incoming call from an guest user -->
+      <section class="call-incoming" style="display: none">
+        <h1>Incoming audio/video call from [guest user]...</h1>
+        <!-- Accept and decline call buttons -->
+        <ul class="call-buttons">
+          <!-- Accept call button -->
+          <li class="call-button">
+            <button class="accept-call-button">Accept call</button>
+          </li>
+          <!-- Decline call button -->
+          <li class="call-button">
+            <button class="decline-call-button">Decline call</button>
+          </li>
+        </ul>
+      </section>
+
+      <!-- Outgoing call to an guest user -->
+      <section class="call-outgoing" style="display: none">
+        <h1>Calling [guest user]...</h1>
+        <!-- Cancel call button -->
+        <button class="cancel-call-button">Cancel call</button>
+      </section>
+
+      <!-- Alert -->
+      <section class="alert" style="display: none">
+        <h1>[Alert]</h1>
+        <!-- Close button -->
+        <button class="close-btn">Close</button>
+      </section>
+    </main>
+    <!-- App scripts (APP_CONFIG is injected by server before </head>) -->
+    <script src="/js/config.js"></script>
+    <script src="/js/shared.js"></script>
+    <script src="/js/auth.js"></script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+{{define "title"}}{{.SiteName}} — Reset password{{end}}
+{{define "content"}}
+<section class="card">
+  <h1>{{.SiteName}}</h1>
+  {{if .Sent}}
+    <p class="lede">Reset request received</p>
+    <div class="notice ok">If that account exists, your administrator has been notified and will send you a reset link. Once you have it, follow the link to choose a new password.</div>
+    <p><a href="/login{{if .Ref}}?ref={{.Ref}}{{end}}">Back to sign in</a></p>
+  {{else}}
+    <p class="lede">Forgot your password?</p>
+    <p>Enter your username and we'll let an administrator know to issue you a reset link. There's no automated email — your admin will pass the link to you directly.</p>
+    {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+    <form method="POST" action="/forgot{{if .Ref}}?ref={{.Ref}}{{end}}">
+      <input type="hidden" name="csrf" value="{{.FormCSRF}}">
+      <input type="hidden" name="ref" value="{{.Ref}}">
+      <div class="form-row">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" autofocus required>
+      </div>
+      <button class="btn primary" type="submit">Request password reset</button>
+    </form>
+    <p style="margin-top:12px"><a href="/login{{if .Ref}}?ref={{.Ref}}{{end}}">Back to sign in</a></p>
+  {{end}}
+</section>
+{{end}}

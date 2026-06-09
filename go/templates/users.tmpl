@@ -1,0 +1,67 @@
+{{define "title"}}{{.SiteName}} — Users{{end}}
+{{define "content"}}
+<header class="admin-head">
+  <h1>Users — {{.Ref}}</h1>
+  <nav class="admin-nav">
+    <a href="/auth.html">Dashboard</a><a href="/account/password">Change password</a>
+    <form method="POST" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn ghost">Sign out</button>
+    </form>
+  </nav>
+</header>
+
+{{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+{{if .InviteLink}}<div class="notice ok">Invite link — copy and send it to the new user (single use, expires):<span class="code">{{.InviteLink}}</span></div>{{end}}
+{{if .ResetLink}}<div class="notice ok">Password reset link — copy and send it to the user (single use, expires; reactivates the account when used):<span class="code">{{.ResetLink}}</span></div>{{end}}
+
+<section class="card">
+  <h3>Invite a user</h3>
+  <form method="POST" action="/users/invite">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="toolbar">
+      <label>Username (optional)<input name="username" placeholder="blank = they choose"></label>
+      <label>Role
+        <select name="role">
+          <option value="agent">Agent</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <button class="btn primary" type="submit">Create invite</button>
+    </div>
+  </form>
+</section>
+
+<section class="card" style="margin-top:16px">
+  <table>
+    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {{range .Users}}
+      <tr>
+        <td>{{.Username}}</td>
+        <td>{{.Role}}</td>
+        <td>{{if .Active}}Active{{else}}Inactive{{end}}{{if .MustChangePW}} · pending first login{{end}}{{if .ResetRequested}} · <strong>reset requested</strong>{{end}}</td>
+        <td>
+          <form method="POST" action="/users/reset" class="inline">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="user_id" value="{{.ID}}">
+            <button class="btn ghost" type="submit">Reset password</button>
+          </form>
+          {{if .Active}}
+          <form method="POST" action="/users/deactivate" class="inline">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="user_id" value="{{.ID}}">
+            <button class="btn ghost" type="submit">Deactivate</button>
+          </form>
+          {{end}}
+          <form method="POST" action="/users/delete" class="inline" onsubmit="return confirm('Permanently delete {{.Username}}? This frees the username for reuse and cannot be undone.');">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="user_id" value="{{.ID}}">
+            <button class="btn ghost danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

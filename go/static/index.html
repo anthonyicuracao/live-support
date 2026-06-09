@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/public/css/normalize.css" />
+    <link rel="stylesheet" href="/public/css/index.css" />
+    <link
+      rel="icon"
+      href="/public/favicon.svg"
+      sizes="any"
+      type="image/svg+xml"
+    />
+    <title>Speak to a live agent</title>
+  </head>
+  <body>
+    <!-- guest user -->
+    <main class="guest-user">
+      <!-- Active call with an auth user -->
+      <section class="call-active" style="display: none">
+        <!-- Agent avatar (prominent during audio calls; JS fills it in). -->
+        <div class="call-active-avatar"></div>
+        <!-- Peer name overlay -->
+        <p class="call-active-name">Speaking with
+          <span class="auth-user-name"></span>
+        </p>
+        <!-- Remote video (main) -->
+        <video class="remote-video" autoplay playsinline></video>
+        <!-- Local video (picture-in-picture) -->
+        <video
+          class="local-video"
+          autoplay
+          playsinline
+          muted
+          style="display: none"
+        ></video>
+        <!-- End call button -->
+        <button class="end-call-button">End call</button>
+      </section>
+
+      <!-- Greeting -->
+      <section class="greeting">
+        <h1>Hello,</h1>
+      </section>
+
+      <!-- Speak to a live agent -->
+      <section class="call" style="display: none">
+        <h1>Speak to a live agent</h1>
+        <!-- No agents available message -->
+        <p class="no-agents-message" style="display: none">
+          No agents are currently available. Please leave a message below.
+        </p>
+        <!-- Audio and video call buttons -->
+        <ul class="call-buttons">
+          <!-- Audio call button -->
+          <li class="call-button">
+            <button class="audio-call-button">Audio call</button>
+          </li>
+          <!-- Video call button -->
+          <li class="call-button">
+            <button class="video-call-button">Video call</button>
+          </li>
+        </ul>
+      </section>
+
+      <!-- Instant Messaging (guest view: appears only when an agent messages
+           first; the guest never sees a list of agents). Docked bottom-right;
+           click the header bar to minimize/expand. -->
+      <section class="im" style="display: none">
+        <button type="button" class="im-dock-header">
+          <span class="im-dock-title im-thread-name">Chat</span>
+          <span class="im-dock-unread" style="display: none">0</span>
+          <span class="im-dock-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="im-body">
+          <div class="im-thread">
+            <ul class="im-messages">
+              <!-- Populated by JS -->
+            </ul>
+            <form class="im-form" autocomplete="off">
+              <input
+                type="text"
+                class="im-input"
+                placeholder="Type…"
+              />
+              <button type="submit" class="im-send">Send</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- Incoming call from an auth user -->
+      <section class="call-incoming" style="display: none">
+        <h1>Incoming audio/video call from [auth user]...</h1>
+        <!-- Accept and decline call buttons -->
+        <ul class="call-buttons">
+          <!-- Accept call button -->
+          <li class="call-button">
+            <button class="accept-call-button">Accept call</button>
+          </li>
+          <!-- Decline call button -->
+          <li class="call-button">
+            <button class="decline-call-button">Decline call</button>
+          </li>
+        </ul>
+      </section>
+
+      <!-- Message from guest to auth users -->
+      <section class="send-message" style="display: none">
+        <h1>Leave a message</h1>
+        <p class="send-message-reason"></p>
+        <form class="send-message-form">
+          <ul class="send-message-form-items">
+            <!-- Guest user form -->
+
+            <!-- Guest user name -->
+            <li class="send-message-form-item mb">
+              <input
+                class="send-message-form-name"
+                placeholder="Name"
+                name="name"
+                type="text"
+              />
+            </li>
+            <!-- Guest user contact -->
+            <li class="send-message-form-item mb">
+              <input
+                class="send-message-form-contact"
+                placeholder="Email"
+                name="contact"
+                type="email"
+              />
+            </li>
+            <!-- Guest user message -->
+            <li class="send-message-form-item mb">
+              <input
+                class="send-message-form-message"
+                placeholder="Type…"
+                name="message"
+                type="text"
+              />
+            </li>
+            <!-- Submit button -->
+            <li class="send-message-form-item">
+              <div class="send-message-form-buttons">
+                <button class="submit-button">Submit</button>
+                <button class="cancel-button">Cancel</button>
+              </div>
+            </li>
+          </ul>
+        </form>
+      </section>
+
+      <!-- Outgoing call to an auth user -->
+      <section class="call-outgoing" style="display: none">
+        <h1>Calling [auth user]...</h1>
+        <!-- Cancel call button -->
+        <button class="cancel-call-button">Cancel call</button>
+      </section>
+
+      <!-- Alert -->
+      <section class="alert" style="display: none">
+        <h1>[Alert]</h1>
+        <!-- Close button -->
+        <button class="close-btn">Close</button>
+      </section>
+    </main>
+    <!-- App scripts (APP_CONFIG is injected by server before </head>) -->
+    <script src="/js/config.js"></script>
+    <script src="/js/shared.js"></script>
+    <script src="/js/guest.js"></script>
+  </body>
+</html>

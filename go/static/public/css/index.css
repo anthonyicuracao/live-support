@@ -1,0 +1,873 @@
+@import url("https://fonts.googleapis.com/css2?family=Solway:wght@300;400;500;700;800&display=swap");
+:root {
+  --primary: #7646b9;
+  --dark: #333;
+  --white: #fff;
+  --grey: rgba(0, 0, 0, 0.075);
+  --light-grey: rgba(0, 0, 0, 0.025);
+}
+* {
+  font-family:
+    "Solway",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+body {
+  font-size: 15px;
+}
+h1 {
+  font-size: 1.5rem;
+}
+h2 {
+  font-size: 1.25rem;
+}
+.call-buttons {
+  display: flex;
+  gap: 1rem;
+}
+.call-active {
+  position: relative;
+}
+.call-active-name {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  margin: 0;
+  z-index: 10;
+}
+.call-active .remote-video {
+  width: 100%;
+  display: none;
+}
+.call-active .local-video {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  width: 160px;
+  height: auto;
+  z-index: 10;
+}
+.call-active .end-call-button {
+  z-index: 10;
+}
+/* Video call: overlay layout */
+.call-active.call-active--video .remote-video {
+  display: block;
+}
+.call-active.call-active--video .end-call-button {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+}
+/* Audio call: name shown normally */
+.call-active:not(.call-active--video) .call-active-name {
+  position: static;
+  text-shadow: none;
+  margin-bottom: 1rem;
+}
+body {
+  padding: 1rem;
+}
+h1,
+h2 {
+  margin-bottom: 1rem;
+  margin-top: 0;
+}
+ul,
+li {
+  padding-inline-start: 0;
+  list-style: none;
+}
+button {
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem 1rem;
+}
+button:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+table {
+  border: none;
+  width: 100%;
+}
+input::placeholder {
+  opacity: 1;
+}
+
+input {
+  border-width: 1px;
+  border-style: solid;
+  padding: 0.5rem;
+  width: 100%;
+  box-sizing: border-box;
+  outline: none !important;
+  box-shadow: none;
+}
+table {
+  border-width: 1px;
+  border-style: solid;
+}
+table th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom-width: 1px;
+  border-bottom-style: solid;
+}
+table th,
+table td {
+  border: none;
+  padding: 1rem;
+  text-align: left;
+}
+.call-active,
+.call,
+.alert,
+.greeting,
+.call-incoming,
+.send-message,
+.call-outgoing,
+.send-message-form {
+  margin-bottom: 5rem;
+}
+.log-calls,
+.log-messages,
+.log-sessions {
+  margin-bottom: 1rem;
+}
+.log-section-header {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.log-section-header h2 {
+  margin-bottom: 0;
+}
+.delete-all-btn {
+  font-size: small;
+  padding: 0.25rem 0.5rem;
+}
+.log-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.log-pagination span {
+  font-size: small;
+  min-width: 5rem;
+  text-align: center;
+}
+.log-pagination button {
+  font-size: small;
+  padding: 0.25rem 0.5rem;
+}
+.log-pagination button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.log-pagination button:disabled:hover {
+  text-decoration: none;
+}
+.log-calls-table td:nth-child(3),
+.log-calls-table td:nth-child(4),
+.log-calls-table td:nth-child(5),
+.log-calls-table td:nth-child(8),
+.log-messages-table td:nth-child(3),
+.log-sessions-table td:nth-child(4),
+.log-sessions-table td:nth-child(5),
+.log-admin-sessions-table td:nth-child(5) {
+  text-transform: capitalize;
+}
+
+.mb {
+  margin-bottom: 0.5rem;
+}
+.send-message-form-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+.send-message-form-buttons button {
+  flex: 1;
+}
+.send-message-form {
+  max-width: 250px;
+}
+
+table th:nth-child(1),
+table td:nth-child(1),
+table th:nth-child(2),
+table td:nth-child(2) {
+  display: none !important;
+}
+
+.call-active-name,
+.call-guest-user-name,
+.auth-user-name,
+.guest-user-name {
+  font-size: large;
+  font-weight: 500;
+}
+
+table tr > td:last-of-type {
+  text-align: right;
+}
+button:hover {
+  box-shadow:
+    rgba(0, 0, 0, 0.1) 0px 1px 3px 0px,
+    rgba(0, 0, 0, 0.06) 0px 1px 2px 0px;
+}
+h1 {
+  font-weight: 700;
+}
+h2,
+table th {
+  font-weight: 600;
+}
+
+table.log-admin-sessions-table tr > td:last-of-type {
+  text-align: left;
+}
+
+.availability__state {
+  visibility: hidden;
+}
+
+/* === Admin availability toggle (moved from auth.html <style>) === */
+.availability {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.95rem;
+}
+.display-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  max-width: 22rem;
+}
+.display-name__label {
+  font-size: 0.85rem;
+  color: var(--dark);
+  opacity: 0.7;
+}
+.display-name__input {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--grey);
+  border-radius: 0.25rem;
+  font-size: 0.95rem;
+}
+.availability__switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+.availability__switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.availability__slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  transition: background-color 0.2s;
+}
+.availability__slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  transition: transform 0.2s;
+}
+.availability__switch input:checked + .availability__slider::before {
+  transform: translateX(20px);
+}
+.availability__switch input:disabled + .availability__slider {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.availability__label {
+  font-weight: 500;
+}
+
+/* === Spinner keyframes (moved from auth.html <style>) === */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* === JWT validation overlays (moved from auth.html inline styles).
+   display:flex / display:none remain inline in auth.html since auth.js
+   toggles them. === */
+#auth-loading {
+  position: fixed;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  font-family: sans-serif;
+  gap: 16px;
+}
+.auth-spinner {
+  width: 36px;
+  height: 36px;
+  border-width: 3px;
+  border-style: solid;
+  animation: spin 0.8s linear infinite;
+}
+.auth-loading-text {
+  margin: 0;
+  font-size: 15px;
+}
+#auth-denied {
+  position: fixed;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  font-family: sans-serif;
+  gap: 12px;
+  text-align: center;
+  padding: 32px;
+}
+.auth-denied-icon {
+  font-size: 40px;
+  margin: 0;
+}
+.auth-denied-title {
+  margin: 0;
+  font-size: 22px;
+}
+#auth-denied-reason {
+  margin: 0;
+  font-size: 15px;
+  max-width: 360px;
+}
+
+/* === Optional passcode gate (auth.html) === */
+#auth-gate {
+  position: fixed;
+  inset: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  font-family: sans-serif;
+  gap: 12px;
+  padding: 1rem;
+}
+.auth-gate-icon {
+  margin: 0;
+  font-size: 40px;
+}
+.auth-gate-title {
+  margin: 0;
+  font-size: 22px;
+}
+.auth-gate-subtitle {
+  margin: 0;
+  font-size: 15px;
+  max-width: 360px;
+  text-align: center;
+  opacity: 0.75;
+}
+.auth-gate-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.6rem;
+  width: 100%;
+  max-width: 18rem;
+  margin-top: 0.5rem;
+}
+.auth-gate-input {
+  padding: calc(1rem / 2);
+  border: 1px solid var(--grey);
+  border-radius: calc(1rem / 4);
+  font-size: 1rem;
+  text-align: center;
+}
+.auth-gate-submit {
+  padding: calc(1rem / 2);
+  border: none;
+  border-radius: calc(1rem / 4);
+  background-color: var(--primary);
+  color: var(--white);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.auth-gate-error {
+  margin: 0;
+  min-height: 1.2em;
+  font-size: 0.9rem;
+  color: #c0392b;
+  text-align: center;
+}
+
+/* === Guest send-message reason (moved from index.html inline style) === */
+.send-message-reason {
+  margin-bottom: 0.5rem;
+}
+
+/* ==========================================================================
+   Isolated border-radius styles (moved to end of file).
+   Order preserved per selector so the cascade outcome is unchanged
+   (e.g. button's calc value still precedes — and is overridden by — 0.75rem).
+   ========================================================================== */
+input,
+button,
+table,
+.call-active .remote-video,
+.call-active .local-video {
+  border-radius: 0.325rem;
+}
+.call-guest-user-status {
+  border-radius: 5rem;
+  border: 1px solid var(--primary);
+}
+.availability__slider {
+  border-radius: 1.25rem;
+}
+.auth-spinner,
+.availability__slider::before {
+  border-radius: 50%;
+}
+/* ==========================================================================
+   Isolated background styles (moved to end of file).
+   Order preserved per selector so the cascade outcome is unchanged.
+   ========================================================================== */
+html,
+body,
+#auth-loading,
+#auth-denied,
+#auth-gate {
+  background-color: var(--white);
+}
+.availability__slider::before {
+  background-color: white;
+}
+input,
+table {
+  background-color: var(--light-grey);
+}
+.availability__slider {
+  background-color: var(--dark);
+}
+.availability__switch input:checked + .availability__slider {
+  background-color: var(--primary);
+}
+button,
+.delete-msg-btn,
+.delete-call-btn,
+.delete-sess-btn,
+.delete-all-btn {
+  background-color: var(--primary);
+}
+.accept-call-button {
+  background-color: var(--primary);
+}
+.decline-call-button,
+.cancel-call-button,
+.end-call-button {
+  background-color: var(--dark);
+}
+/* ==========================================================================
+   Isolated color styles (text colors + border colors; moved to end of file).
+   Order preserved per selector so the cascade outcome is unchanged.
+   ========================================================================== */
+html,
+body,
+table,
+input,
+#auth-loading,
+#auth-denied,
+#auth-denied-reason,
+.availability__state,
+.call-active-name,
+input::placeholder,
+table,
+table th,
+.call-active:not(.call-active--video) .call-active-name {
+  color: var(--dark);
+}
+button,
+.call-active .end-call-button,
+.delete-msg-btn,
+.delete-call-btn,
+.delete-sess-btn,
+.delete-all-btn {
+  color: var(--white);
+}
+input,
+table,
+table th {
+  border-color: var(--grey);
+}
+.auth-spinner {
+  border-color: var(--grey);
+  border-top-color: var(--primary);
+}
+.auth-denied-title {
+  color: var(--primary);
+}
+
+td button {
+  margin-left: auto;
+  display: flex;
+  justify-content: center;
+  align-self: flex-end;
+}
+
+.call-guest-user-status {
+  background-color: var(--primary);
+  color: var(--white);
+  font-size: x-small;
+  padding: 0.125rem 0.25rem;
+  bottom: 0.125rem;
+  margin-left: 0.25rem;
+  position: relative;
+}
+
+/* ─── Instant Messaging (docked bottom-right, Facebook-style) ──────────── */
+.im {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1000;
+  width: 22rem;
+  max-width: calc(100vw - 2 * 1rem);
+  background-color: var(--white);
+  border: 1px solid var(--grey);
+  border-bottom: none;
+  border-bottom-left-radius: 0.5rem;
+  border-bottom-right-radius: 0.5rem;
+  border-top-left-radius: 0.5rem;
+  border-top-right-radius: 0.5rem;
+  box-shadow: 0 0 1rem rgba(44, 62, 80, 0.25);
+  overflow: hidden;
+}
+/* Clickable title bar */
+.im-dock-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 0.5rem;
+  background-color: var(--primary);
+  color: var(--white);
+  font-size: 1rem;
+  font-weight: bold;
+  border-radius: 0;
+  text-decoration: none !important;
+}
+.im-dock-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.im-dock-unread {
+  font-size: x-small;
+  background-color: var(--primary);
+  color: var(--white);
+  border-radius: 999px;
+  min-width: 1.2rem;
+  text-align: center;
+  padding: 0 0.25rem;
+}
+.im-dock-chevron {
+  transition: transform 0.15s ease;
+}
+/* Collapsed: hide the body, point the chevron up, square off the bar */
+.im.im-collapsed .im-body {
+  display: none;
+}
+.im.im-collapsed .im-dock-chevron {
+  transform: rotate(180deg);
+}
+.im-body {
+  border-top: 1px solid var(--grey);
+}
+.im-layout {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  padding: 0.5rem;
+}
+.im-sidebar {
+  flex: 0 0 7rem;
+  border: 1px solid var(--grey);
+  border-radius: 0.25rem;
+  padding: 0.25rem;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+.im-sidebar-title {
+  font-size: small;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  margin: 0 0 0.5rem;
+}
+.im-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.im-roster-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  cursor: pointer;
+}
+.im-roster-item:hover {
+  background-color: var(--light-grey);
+}
+.im-roster-item.im-active {
+  background-color: var(--grey);
+}
+.im-roster-role {
+  font-size: x-small;
+  color: var(--white);
+  background-color: var(--primary);
+  border-radius: 0.25rem;
+  padding: 0 0.25rem;
+  text-transform: uppercase;
+}
+.im-roster-role.im-role-guest {
+  background-color: var(--primary);
+}
+.im-roster-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.im-unread {
+  font-size: x-small;
+  color: var(--white);
+  background-color: var(--primary);
+  border-radius: 999px;
+  min-width: 1.2rem;
+  text-align: center;
+  padding: 0 0.25rem;
+}
+.im-thread {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--grey);
+  border-radius: 0.25rem;
+  height: 18rem;
+}
+.im-thread-header {
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid var(--grey);
+  font-weight: bold;
+  font-size: small;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.im-messages {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.im-msg {
+  max-width: 75%;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  word-wrap: break-word;
+}
+.im-msg-in {
+  align-self: flex-start;
+  background-color: var(--light-grey);
+}
+.im-msg-out {
+  align-self: flex-end;
+  background-color: var(--primary);
+  color: var(--white);
+}
+.im-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--grey);
+}
+.im-input {
+  flex: 1;
+}
+.im-empty {
+  color: var(--dark);
+  opacity: 0.6;
+  text-align: center;
+  margin: auto;
+}
+/* Guest dock: the thread sits directly in the body (no roster), so it needs
+   no inner border/rounding — the dock frame already provides it. */
+.im-body > .im-thread {
+  border: none;
+  border-radius: 0;
+  height: 20rem;
+}
+
+/* === Avatars (profile pictures) ========================================== */
+/* Circular avatar used in the IM roster/thread, call overlay, and the agent's
+   own upload preview. The placeholder variant shows the name's first initial
+   on a tinted disc when no picture has been uploaded. */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background-color: var(--light-grey);
+  color: var(--primary);
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+.avatar__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.avatar--placeholder {
+  background-color: var(--dark);
+  color: var(--white);
+}
+.avatar--lg {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1.5rem;
+}
+/* The agent's upload preview reuses .avatar--lg but toggles between an <img>
+   and an initial-letter <span> directly (rather than the placeholder variant),
+   so give that span the same tinted disc treatment. */
+.avatar__initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background-color: var(--dark);
+  color: var(--white);
+}
+
+/* Agent's profile-picture upload control on the greeting screen. */
+.profile-picture {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  max-width: 28rem;
+}
+.profile-picture__label {
+  font-size: 0.85rem;
+  color: var(--dark);
+  opacity: 0.7;
+}
+.profile-picture__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.profile-picture__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.profile-picture__btn {
+  display: inline-block;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.9rem;
+  background-color: var(--dark);
+  font-weight: 500;
+  color: var(--white);
+}
+.profile-picture__btn input[type="file"] {
+  display: none;
+}
+#avatar-remove {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.9rem;
+  background-color: var(--dark);
+  color: var(--white);
+  cursor: pointer;
+}
+.profile-picture__status {
+  font-size: 0.8rem;
+  color: var(--dark);
+  opacity: 0.7;
+}
+
+/* The guest's thread header lays the agent avatar beside the name.
+   (.im-roster-item is already a flex row with a gap — avatars slot in.) */
+.im-thread-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.im-thread-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Agent avatar on the guest's active-call screen — prominent for audio calls,
+   hidden once a video stream takes over the view. */
+.call-active-avatar {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.75rem;
+}
+.call-active--video .call-active-avatar {
+  display: none;
+}
+
+a,
+button,
+.auth-user-name,
+.call-guest-user-status {
+  font-weight: 500 !important;
+}

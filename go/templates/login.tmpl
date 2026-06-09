@@ -1,0 +1,29 @@
+{{define "title"}}{{.SiteName}} — Sign in{{end}}
+{{define "content"}}
+<section class="card">
+  <h1>{{.SiteName}}</h1>
+  <p class="lede">Agent sign in{{if .RefLocked}} — {{.Ref}}{{end}}</p>
+  {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+  <form method="POST" action="/login{{if .RefLocked}}?ref={{.Ref}}{{end}}">
+    <input type="hidden" name="csrf" value="{{.FormCSRF}}">
+    {{if .RefLocked}}
+      <input type="hidden" name="ref" value="{{.Ref}}">
+    {{else}}
+      <div class="form-row">
+        <label for="ref">Domain</label>
+        <input id="ref" name="ref" value="{{.Ref}}" placeholder="example.com" required>
+      </div>
+    {{end}}
+    <div class="form-row">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" autofocus required>
+    </div>
+    <div class="form-row">
+      <label for="password">Password</label>
+      <input id="password" type="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+  <p class="muted" style="margin-top:12px"><a href="/forgot{{if .Ref}}?ref={{.Ref}}{{end}}">Forgot your password?</a></p>
+</section>
+{{end}}
