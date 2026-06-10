@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS invites (
   token_hash       TEXT    NOT NULL UNIQUE,
   role             TEXT    NOT NULL CHECK (role IN ('admin','agent')),
   username         TEXT,
-  created_by       INTEGER NOT NULL REFERENCES users(id),
+  created_by       INTEGER REFERENCES users(id),  -- NULL for platform-minted invites
   created_at       INTEGER NOT NULL,
   expires_at       INTEGER NOT NULL,
   redeemed_at      INTEGER,
