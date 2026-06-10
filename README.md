@@ -4,6 +4,15 @@ A self-hosted, single-binary live audio/video support server. Guests reach a liv
 
 Live Support is **fully self-contained**: agents sign in with a built-in username/password system — argon2id password hashing, server-side sessions, CSRF protection, invite-based user creation, and a per-tenant user-management page — with no external identity provider or vendor service required. Updated — June 2026.
 
+## Screenshots
+
+|  |  |
+| --- | --- |
+| **Guest — reach a live agent** | **Agent — incoming call** |
+| ![Guest page](docs/screenshots/guest.png) | ![Incoming call](docs/screenshots/incoming.png) |
+| **Agent dashboard** | **User management** |
+| ![Agent dashboard](docs/screenshots/agent-dashboard.png) | ![User management](docs/screenshots/user-management.png) |
+
 ## 1. Overview
 
 ### 1.1 Guest Page (index.html)
