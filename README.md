@@ -153,11 +153,11 @@ Deployment is a copy-and-run operation: build (or download) the binary, place it
 | | |
 |---|---|
 | Distribution | One executable (live-support). Frontend files — including any auth-provider modules — are embedded; the `data/` directory of per-tenant SQLite databases is created automatically on first start. |
-| Configuration | Environment variables or a `.env` file beside the binary. See §2.1. |
+| Configuration | A systemd `EnvironmentFile` in production, or a `.env` file beside the binary in development. See §2.1. |
 | HTTPS | Browsers require HTTPS for microphone and camera access on any non-localhost address. Run the binary behind a TLS-terminating reverse proxy such as Caddy (automatic Let's Encrypt certificates) or nginx. WebSocket traffic upgrades automatically to wss: on HTTPS pages. |
 | Topology | Single instance by design. Presence and call signaling live in process memory and each SQLite database uses one writer, so the application must run as exactly one replica. This matches the product's scale and keeps operations trivial. |
 | Backups | Backing up the deployment means copying the `data/` folder. Backing up (or removing) a single tenant means copying (or deleting) that tenant's one database file. No dump tooling or managed-database export is involved. |
-| Updating | Stop the process, replace the binary, start it again. Database schema is created and migrated automatically at startup. |
+| Updating | `sudo live-support-update` (latest stable within the tracked major), or stop / replace-binary / start. Schema is created and migrated automatically at startup. See §2.4. |
 
 ### 2.1 Configuration
 
@@ -166,14 +166,15 @@ All settings come from environment variables or a `.env` file beside the binary.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8000` | HTTP listen port. |
-| `DATA_DIR` | `data` | Directory holding one SQLite database per tenant ref. |
+| `BIND_ADDR` | `127.0.0.1` | Address to bind. Loopback-only by default so only the reverse proxy reaches the app; set `0.0.0.0` for direct access. |
+| `DATA_DIR` | `data` | Directory holding one SQLite database per tenant ref (the systemd unit sets it to `/var/lib/live-support`). |
 | `ADMIN_USERNAME` | `admin` | Username of the initial admin account created the first time a tenant is used. See §1.7. |
 | `ADMIN_INITIAL_PASSWORD` | *(empty)* | Password for that initial admin. Empty = a temporary password is generated and printed to the server log (must be changed on first login). |
 | `SESSION_TTL_HOURS` | `168` | Login session lifetime. |
 | `INVITE_TTL_HOURS` | `72` | Invite-link lifetime. |
 | `RESET_TTL_HOURS` | `24` | Password-reset-link lifetime. |
 | `SECURE_COOKIES` | `false` | Set `true` when serving over HTTPS so cookies are marked `Secure`. |
-| `CONNECT_SECRET` | *(generated)* | Shared secret for platform sign-in hand-off links (`/handoff`). Auto-generated, saved to `.env`, and logged on first run if unset. See §1.7. |
+| `CONNECT_SECRET` | *(generated)* | Shared secret for platform sign-in hand-off links (`/handoff`). Auto-generated, persisted under `DATA_DIR` (`data/connect_secret`), and logged on first run if unset; the config file is never modified. See §1.7. |
 | `SITE_NAME` | `Live Support` | Name shown on the sign-in and user-management pages. |
 | `PRIMARY_COLOR` | *(empty)* | Optional brand color applied to the UI at runtime (overrides the CSS `--primary` variable). Accepts any CSS color — hex (`#7646b9`), `rgb()/rgba()`, `hsl()/hsla()`, or a named color. Invalid or empty values fall back to the stylesheet default. |
 | `FAVICON_URL` | *(empty)* | Optional favicon override applied at runtime. Accepts an absolute `http(s)://` URL or a same-origin path (`/...`). Invalid or empty values fall back to the bundled `/public/favicon.svg`. |
@@ -181,6 +182,77 @@ All settings come from environment variables or a `.env` file beside the binary.
 | `DEV_MODE` | `false` | Enables the agent-dashboard dev bypass (`?dev=true`). Never enable in production. |
 | `CLOUDFLARE_TURN_TOKEN_ID` | *(empty)* | Optional Cloudflare TURN token ID. Without TURN credentials the app falls back to public STUN servers. |
 | `CLOUDFLARE_API_TOKEN` | *(empty)* | Optional Cloudflare API token for TURN credential generation. |
+
+### 2.2 Install (Linux, one line)
+
+A one-line installer downloads a verified release, installs the binary plus a hardened systemd unit, and sets up the auto-updater:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/anthonyicuracao/live-support/main/install.sh | sudo sh
+```
+
+It detects your OS/arch, verifies the release SHA-256, installs `/usr/local/bin/live-support`, creates the `live-support` service user, and writes the systemd unit + updater. Then:
+
+```bash
+sudoedit /etc/live-support/live-support.env   # set ADMIN_USERNAME, Cloudflare TURN creds, SECURE_COOKIES=true
+sudo systemctl enable --now live-support
+curl -fsS http://127.0.0.1:8000/healthz       # -> ok
+```
+
+On an EC2 instance (or any VPS): Amazon Linux 2023 / Ubuntu 24.04, a `t3.micro` (or `t4g.micro` for ARM), with inbound **22** (your IP only), **80**, and **443**. WebRTC media is peer-to-peer / relayed via Cloudflare TURN, so no UDP ports are needed — signaling rides the WebSocket on 443. Full reference: [`deploy/README.md`](deploy/README.md).
+
+### 2.3 HTTPS reverse proxy (required — getUserMedia/WebRTC needs a secure origin)
+
+Point a DNS A record for your subdomain at the host's public IP.
+
+**Caddy (recommended)** — automatic Let's Encrypt certificates, transparent WebSocket proxying:
+
+```bash
+sudo dnf install caddy        # Ubuntu: sudo apt install caddy
+```
+
+`/etc/caddy/Caddyfile` (see [`deploy/Caddyfile.example`](deploy/Caddyfile.example)):
+
+```
+live-support.example.com {
+    reverse_proxy localhost:8000
+}
+```
+
+```bash
+sudo systemctl enable --now caddy
+```
+
+Co-hosting with CSAT on the same box? Add a second block routing `csat.example.com` to its port — Caddy gets a certificate per subdomain automatically.
+
+**nginx** is fully supported too — use [`deploy/nginx-live-support.conf.example`](deploy/nginx-live-support.conf.example) (it includes the WebSocket upgrade headers `/ws` requires) and `certbot --nginx`.
+
+### 2.4 Updating
+
+```bash
+sudo live-support-update              # latest stable within the tracked major (v1)
+```
+
+It backs up every tenant DB to `/var/lib/live-support/backups/<timestamp>/` before swapping the binary and restarting. Automate nightly with `systemctl enable --now live-support-update.timer`.
+
+### 2.5 Build from source
+
+```bash
+go build -o live-support .                                   # local
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o live-support .   # static Linux binary
+```
+
+The pure-Go SQLite driver makes `CGO_ENABLED=0` work — one fully static binary. `make package` produces a release tarball identical to the CI build.
+
+### 2.6 Deployment checklist
+
+- [ ] Host launched, firewall / security group: 22 (your IP), 80, 443
+- [ ] `curl … install.sh | sudo sh` succeeded
+- [ ] `/etc/live-support/live-support.env`: Cloudflare TURN creds + `SECURE_COOKIES=true`
+- [ ] `systemctl enable --now live-support`, `/healthz` returns `ok`
+- [ ] DNS A record → host IP
+- [ ] Caddy (or nginx) running, HTTPS works
+- [ ] Test: guest page loads, agent sign-in works (`/login?ref=...`), call connects
 
 ## 3. Integrating the Guest Page
 
@@ -212,103 +284,3 @@ No changes to the guest page itself are required — it is ready to receive thes
 | Go server — single binary, embedded frontend, TURN proxy | ✓ Done | Complete. |
 | Guest-page link from a chatbot/site | Integration | Link to `/?ref=<tenant>` from wherever guests start. |
 
-## Deploying to a server (EC2)
-
-Single static Go binary + SQLite — no server-side dependencies. A one-line
-installer downloads a verified release, installs the binary + a hardened systemd
-unit, and sets up the auto-updater. The app listens on `PORT` (default **8000**),
-binds `127.0.0.1` by default (proxy-only), and stores per-tenant SQLite files in
-`DATA_DIR` (default `/var/lib/live-support` under the service). Full reference:
-[`deploy/README.md`](deploy/README.md).
-
-### 1. Launch the instance
-
-EC2 → Launch instance:
-
-- **AMI:** Amazon Linux 2023 (or Ubuntu 24.04)
-- **Type:** `t3.micro` (or `t4g.micro` for ARM — cheaper)
-- **Key pair:** create/download one for SSH
-- **Security group inbound rules:**
-  - TCP 22 — your IP only (SSH)
-  - TCP 80 — anywhere (Let's Encrypt + redirect)
-  - TCP 443 — anywhere (HTTPS/WSS)
-
-WebRTC media goes peer-to-peer via Cloudflare TURN, so no UDP ports are needed on
-this server — signaling rides over the WebSocket on 443.
-
-### 2. Install
-
-```bash
-ssh -i key.pem ec2-user@<EC2_IP>
-curl -fsSL https://raw.githubusercontent.com/anthonyicuracao/live-support/main/install.sh | sudo sh
-```
-
-This detects your OS/arch, downloads the latest stable release, verifies its
-SHA-256, installs `/usr/local/bin/live-support`, creates the `live-support`
-service user, and installs the systemd unit + updater. Then:
-
-```bash
-sudoedit /etc/live-support/live-support.env   # set ADMIN_USERNAME, Cloudflare TURN creds, SECURE_COOKIES=true
-sudo systemctl enable --now live-support
-curl -fsS http://127.0.0.1:8000/healthz       # -> ok
-```
-
-### 3. HTTPS reverse proxy (required — getUserMedia/WebRTC needs a secure origin)
-
-Point a DNS A record for your subdomain at the instance's public IP.
-
-**Caddy (recommended)** — automatic Let's Encrypt certs, transparent WebSocket
-proxying:
-
-```bash
-sudo dnf install caddy        # Ubuntu: sudo apt install caddy
-```
-
-`/etc/caddy/Caddyfile` (see [`deploy/Caddyfile.example`](deploy/Caddyfile.example)):
-
-```
-live-support.example.com {
-    reverse_proxy localhost:8000
-}
-```
-
-```bash
-sudo systemctl enable --now caddy
-```
-
-Co-hosting with CSAT on the same box? Add a second block routing
-`csat.example.com` to its port — Caddy gets a cert per subdomain automatically.
-
-**nginx** is fully supported too — use
-[`deploy/nginx-live-support.conf.example`](deploy/nginx-live-support.conf.example)
-(it includes the WebSocket upgrade headers `/ws` requires) and `certbot --nginx`.
-
-### 4. Updating
-
-```bash
-sudo live-support-update              # latest stable within the tracked major (v1)
-```
-
-It backs up every tenant DB to `/var/lib/live-support/backups/<timestamp>/`
-before swapping the binary and restarting. Automate nightly with
-`systemctl enable --now live-support-update.timer`.
-
-### Build from source (developers)
-
-```bash
-go build -o live-support .                                   # local
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o live-support .   # static Linux binary
-```
-
-The pure-Go SQLite driver makes `CGO_ENABLED=0` work — one fully static binary.
-`make package` produces a release tarball identical to the CI build.
-
-### Checklist
-
-- [ ] Instance launched, security group: 22 (your IP), 80, 443
-- [ ] `curl … install.sh | sudo sh` succeeded
-- [ ] `/etc/live-support/live-support.env`: Cloudflare TURN creds + `SECURE_COOKIES=true`
-- [ ] `systemctl enable --now live-support`, `/healthz` returns `ok`
-- [ ] DNS A record → instance IP
-- [ ] Caddy (or nginx) running, HTTPS works
-- [ ] Test: guest page loads, agent sign-in works (`/login?ref=...`), call connects
