@@ -253,6 +253,25 @@ func (p *dbPool) get(ref string) (*sql.DB, error) {
 	return d, nil
 }
 
+// exists reports whether a tenant DB is already present (cached or on disk)
+// WITHOUT creating it. Lets public, ref-controlled endpoints (e.g. /api/online,
+// which is CORS-* and called from arbitrary tenant sites) avoid spawning empty
+// tenant DBs for unknown/guessed refs.
+func (p *dbPool) exists(ref string) bool {
+	key := safeRefFile(ref)
+	if key == "" {
+		return false
+	}
+	p.mu.Lock()
+	_, cached := p.dbs[key]
+	p.mu.Unlock()
+	if cached {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(p.dataDir, key+".db"))
+	return err == nil
+}
+
 // all returns handles for every tenant DB on disk (opening any not yet
 // cached). Used to resolve rows by globally-unique ID when the request
 // doesn't carry a ref (PATCH ?session_id=.., DELETE /api/<table>/<id>).
@@ -1303,6 +1322,14 @@ func onlineHandler(w http.ResponseWriter, r *http.Request) {
 	// Pick tenant DBs: just the ref's DB, or all of them if no ref given.
 	var targets []*sql.DB
 	if ref != "" {
+		// Never auto-create from this public CORS-* endpoint: an unknown ref
+		// means "nobody online", not "provision a new tenant".
+		if !dbs.exists(ref) {
+			writeJSON(w, 200, map[string]interface{}{
+				"online": false, "count": 0, "withCamera": 0, "withMic": 0,
+			})
+			return
+		}
 		d, err := dbs.get(ref)
 		if err != nil {
 			errJSON(w, 400, err.Error())
