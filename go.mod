@@ -1,4 +1,4 @@
-module webrtc-app
+module github.com/anthonyicuracao/live-support
 
 go 1.22
 

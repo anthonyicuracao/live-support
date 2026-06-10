@@ -1,0 +1,8 @@
+[Unit]
+Description=Live Support auto-update (latest release within the tracked major)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/live-support-update

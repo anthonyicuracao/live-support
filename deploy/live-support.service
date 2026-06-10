@@ -1,0 +1,29 @@
+[Unit]
+Description=Live Support (WebRTC video/voice/chat support)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=live-support
+Group=live-support
+WorkingDirectory=/var/lib/live-support
+# Prod defaults; the EnvironmentFile below may override any of these.
+Environment=DATA_DIR=/var/lib/live-support
+Environment=BIND_ADDR=127.0.0.1
+EnvironmentFile=/etc/live-support/live-support.env
+ExecStart=/usr/local/bin/live-support
+Restart=on-failure
+RestartSec=2
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/live-support
+
+[Install]
+WantedBy=multi-user.target

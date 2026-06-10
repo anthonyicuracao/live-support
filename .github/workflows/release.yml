@@ -1,0 +1,88 @@
+name: release
+
+# Tag a version (e.g. `git tag v1.0.0 && git push --tags`) to build all
+# platforms and publish a GitHub Release with downloadable archives.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go vet ./...
+      - run: go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build and package
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME}"
+          # Versionless archive name so .../releases/latest/download/<name> is a
+          # stable URL the installer/updater can use without the GitHub API.
+          NAME="live-support-${GOOS}-${GOARCH}"
+          BIN="live-support"; [ "$GOOS" = "windows" ] && BIN="live-support.exe"
+          mkdir -p "dist/${NAME}"
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${NAME}/${BIN}" .
+          cp .env.example README.md "dist/${NAME}/"
+          cp deploy/live-support.service deploy/install.sh deploy/update.sh "dist/${NAME}/"
+          cp deploy/live-support-update.service deploy/live-support-update.timer "dist/${NAME}/"
+          cp deploy/Caddyfile.example deploy/nginx-live-support.conf.example "dist/${NAME}/"
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip -r "${NAME}.zip" "${NAME}"
+            sha256sum "${NAME}.zip" > "${NAME}.zip.sha256"
+          else
+            tar czf "${NAME}.tar.gz" "${NAME}"
+            sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-support-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # Tags with a hyphen (e.g. v1.0.0-rc1) are prereleases, so the
+          # "latest" download URL keeps resolving to the last stable release.
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -590,20 +591,38 @@ func decryptHandoff(secret, tok string) (ref, username, role string, ts int64, e
 }
 
 // ensureConnectSecret returns CONNECT_SECRET, generating one on first run.
-// A generated secret is appended to .env so links keep working across
-// restarts, and printed to the log so it can be pasted into the platform's
+//
+// Config is treated as immutable: rather than write back to .env, a generated
+// secret is persisted under DATA_DIR (the app's writable state directory) so it
+// survives restarts. This keeps the config file read-only, which lets the
+// systemd unit run hardened (ProtectSystem=strict, root-owned EnvironmentFile).
+// The secret is also printed to the log so it can be pasted into the platform's
 // integration settings.
 func ensureConnectSecret() string {
 	if v := strings.TrimSpace(os.Getenv("CONNECT_SECRET")); v != "" {
 		return v
 	}
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	path := filepath.Join(dataDir, "connect_secret")
+
+	// Reuse a previously generated secret so hand-off links survive restarts.
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			os.Setenv("CONNECT_SECRET", s)
+			return s
+		}
+	}
+
 	secret := randToken()
-	if f, err := os.OpenFile(".env", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
-		fmt.Fprintf(f, "\n# Shared secret for platform hand-off links (auto-generated on first run).\nCONNECT_SECRET=%s\n", secret)
-		f.Close()
-		log.Printf("[Auth] generated CONNECT_SECRET and saved it to .env")
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		log.Printf("[Auth] CONNECT_SECRET not set and %s not writable — using an ephemeral secret for this run", dataDir)
+	} else if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		log.Printf("[Auth] CONNECT_SECRET not set and %s not writable — using an ephemeral secret for this run", path)
 	} else {
-		log.Printf("[Auth] CONNECT_SECRET not set and .env not writable — using an ephemeral secret for this run")
+		log.Printf("[Auth] generated CONNECT_SECRET and saved it to %s", path)
 	}
 	log.Printf("[Auth] CONNECT_SECRET: %s", secret)
 	log.Printf("[Auth]     paste it into the platform's integration settings to enable sign-in hand-off links")
@@ -767,11 +786,11 @@ type authApp struct {
 	inviteTTL  time.Duration
 	resetTTL   time.Duration
 
-	adminUsername   string
-	adminInitialPW  string
-	handoffSecret   string // shared secret for platform hand-off links
-	throttle        *loginThrottle
-	bootstrapped    sync.Map // ref -> true, once the tenant has been checked
+	adminUsername  string
+	adminInitialPW string
+	handoffSecret  string // shared secret for platform hand-off links
+	throttle       *loginThrottle
+	bootstrapped   sync.Map // ref -> true, once the tenant has been checked
 }
 
 func envHours(key string, def int) time.Duration {

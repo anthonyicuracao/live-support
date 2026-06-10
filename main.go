@@ -12,8 +12,8 @@
 //   - Built-in username/password authentication and per-tenant user
 //     management (see auth.go): /login, /users, invites, password resets
 //
-// Build:  go mod tidy && go build -o webrtc-app .
-// Run:    ./webrtc-app            (reads .env from working dir, or env vars)
+// Build:  go mod tidy && go build -o live-support .
+// Run:    ./live-support          (reads .env from working dir, or env vars)
 package main
 
 import (
@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -49,9 +50,14 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+// version is set at build time via -ldflags "-X main.version=...".
+// The updater (live-support-update) compares `live-support -version` against
+// the latest release to decide whether to swap the binary.
+var version = "dev"
+
 var (
-	dbs  *dbPool
-	hub  *Hub
+	dbs           *dbPool
+	hub           *Hub
 	cfTurnTokenID string
 	cfAPIToken    string
 )
@@ -313,6 +319,7 @@ func nowISO() string { return time.Now().UTC().Format(time.RFC3339) }
 //   - hex: #rgb, #rgba, #rrggbb, #rrggbbaa
 //   - functional: rgb()/rgba()/hsl()/hsla() with digits, %, ., spaces, commas
 //   - a plain keyword (e.g. "rebeccapurple") — letters only
+//
 // This is a safety allowlist: the value is set via style.setProperty on the
 // client (already injection-safe), but validating here keeps anything weird
 // out of the config payload entirely.
@@ -1381,6 +1388,13 @@ func iceConfigHandler(w http.ResponseWriter, r *http.Request) {
 // ───────────────────────── main ─────────────────────────
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+
 	loadDotEnv()
 
 	cfTurnTokenID = os.Getenv("CLOUDFLARE_TURN_TOKEN_ID")
@@ -1388,6 +1402,12 @@ func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
+	}
+	// Bind loopback by default so the app is only reachable through the
+	// reverse proxy (Caddy/nginx). Set BIND_ADDR=0.0.0.0 for direct LAN access.
+	bindAddr := os.Getenv("BIND_ADDR")
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
 	}
 	dataDir := os.Getenv("DATA_DIR")
 	if dataDir == "" {
@@ -1402,6 +1422,12 @@ func main() {
 	hub = newHub()
 
 	mux := http.NewServeMux()
+
+	// Liveness probe for the installer smoke test and uptime checks.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
 
 	// WebSocket
 	mux.HandleFunc("/ws", wsHandler)
@@ -1539,5 +1565,6 @@ func main() {
 		log.Printf("[Server] Guest: http://localhost:%s/index.html?ref=YOUR_REF&name=John+Doe&email=john@example.com", port)
 	}
 	log.Printf("[Server] Data dir (one SQLite DB per ref): %s", dataDir)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Printf("[Server] Listening on %s:%s", bindAddr, port)
+	log.Fatal(http.ListenAndServe(bindAddr+":"+port, mux))
 }

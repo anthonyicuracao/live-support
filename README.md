@@ -143,7 +143,7 @@ Deployment is a copy-and-run operation: build (or download) the binary, place it
 
 | | |
 |---|---|
-| Distribution | One executable (webrtc-app). Frontend files — including any auth-provider modules — are embedded; the `data/` directory of per-tenant SQLite databases is created automatically on first start. |
+| Distribution | One executable (live-support). Frontend files — including any auth-provider modules — are embedded; the `data/` directory of per-tenant SQLite databases is created automatically on first start. |
 | Configuration | Environment variables or a `.env` file beside the binary. See §2.1. |
 | HTTPS | Browsers require HTTPS for microphone and camera access on any non-localhost address. Run the binary behind a TLS-terminating reverse proxy such as Caddy (automatic Let's Encrypt certificates) or nginx. WebSocket traffic upgrades automatically to wss: on HTTPS pages. |
 | Topology | Single instance by design. Presence and call signaling live in process memory and each SQLite database uses one writer, so the application must run as exactly one replica. This matches the product's scale and keeps operations trivial. |
@@ -203,96 +203,62 @@ No changes to the guest page itself are required — it is ready to receive thes
 | Go server — single binary, embedded frontend, TURN proxy | ✓ Done | Complete. |
 | Guest-page link from a chatbot/site | Integration | Link to `/?ref=<tenant>` from wherever guests start. |
 
-## Deploying webrtc-app to EC2
+## Deploying to a server (EC2)
 
-Single static Go binary + SQLite — no server-side dependencies. The app listens on `PORT` (default **8000**) and stores per-tenant SQLite files in `DATA_DIR` (default `./data`).
+Single static Go binary + SQLite — no server-side dependencies. A one-line
+installer downloads a verified release, installs the binary + a hardened systemd
+unit, and sets up the auto-updater. The app listens on `PORT` (default **8000**),
+binds `127.0.0.1` by default (proxy-only), and stores per-tenant SQLite files in
+`DATA_DIR` (default `/var/lib/live-support` under the service). Full reference:
+[`deploy/README.md`](deploy/README.md).
 
-### 1. Launch the EC2 instance
+### 1. Launch the instance
 
 EC2 → Launch instance:
 
 - **AMI:** Amazon Linux 2023 (or Ubuntu 24.04)
-- **Type:** `t3.micro` (or `t4g.micro` for ARM — cheaper; build with `GOARCH=arm64`)
+- **Type:** `t3.micro` (or `t4g.micro` for ARM — cheaper)
 - **Key pair:** create/download one for SSH
 - **Security group inbound rules:**
   - TCP 22 — your IP only (SSH)
   - TCP 80 — anywhere (Let's Encrypt + redirect)
   - TCP 443 — anywhere (HTTPS/WSS)
 
-WebRTC media goes peer-to-peer via Cloudflare TURN, so no UDP ports are needed on this server — signaling rides over the WebSocket on 443.
+WebRTC media goes peer-to-peer via Cloudflare TURN, so no UDP ports are needed on
+this server — signaling rides over the WebSocket on 443.
 
-### 2. Build the binary locally
-
-Cross-compile on your Mac; Go is not needed on the server:
-
-```bash
-cd ~/connect/go
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o webrtc-app .
-# GOARCH=arm64 for a t4g/Graviton instance
-```
-
-The pure-Go SQLite driver makes `CGO_ENABLED=0` work — one fully static binary.
-
-### 3. Copy up and install
+### 2. Install
 
 ```bash
-scp -i key.pem webrtc-app .env ec2-user@<EC2_IP>:~
 ssh -i key.pem ec2-user@<EC2_IP>
-
-sudo mkdir -p /opt/webrtc-app/data
-sudo mv ~/webrtc-app ~/.env /opt/webrtc-app/
-sudo chmod +x /opt/webrtc-app/webrtc-app
-sudo chown -R ec2-user:ec2-user /opt/webrtc-app
+curl -fsSL https://raw.githubusercontent.com/anthonyicuracao/live-support/main/install.sh | sudo sh
 ```
 
-`.env` must contain at least:
-
-```
-CLOUDFLARE_TURN_TOKEN_ID=...
-CLOUDFLARE_API_TOKEN=...
-PORT=8000
-DATA_DIR=/opt/webrtc-app/data
-```
-
-### 4. Run as a systemd service
-
-Create `/etc/systemd/system/webrtc-app.service`:
-
-```ini
-[Unit]
-Description=webrtc-app
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/webrtc-app
-ExecStart=/opt/webrtc-app/webrtc-app
-EnvironmentFile=/opt/webrtc-app/.env
-Restart=always
-User=ec2-user
-
-[Install]
-WantedBy=multi-user.target
-```
+This detects your OS/arch, downloads the latest stable release, verifies its
+SHA-256, installs `/usr/local/bin/live-support`, creates the `live-support`
+service user, and installs the systemd unit + updater. Then:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now webrtc-app
-sudo systemctl status webrtc-app        # verify it's running
-journalctl -u webrtc-app -f             # live logs
+sudoedit /etc/live-support/live-support.env   # set ADMIN_USERNAME, Cloudflare TURN creds, SECURE_COOKIES=true
+sudo systemctl enable --now live-support
+curl -fsS http://127.0.0.1:8000/healthz       # -> ok
 ```
 
-### 5. HTTPS with Caddy (required — getUserMedia/WebRTC needs a secure origin)
+### 3. HTTPS reverse proxy (required — getUserMedia/WebRTC needs a secure origin)
 
-Point a DNS A record for your domain at the instance's public IP, then:
+Point a DNS A record for your subdomain at the instance's public IP.
+
+**Caddy (recommended)** — automatic Let's Encrypt certs, transparent WebSocket
+proxying:
 
 ```bash
 sudo dnf install caddy        # Ubuntu: sudo apt install caddy
 ```
 
-`/etc/caddy/Caddyfile`:
+`/etc/caddy/Caddyfile` (see [`deploy/Caddyfile.example`](deploy/Caddyfile.example)):
 
 ```
-yourdomain.com {
+live-support.example.com {
     reverse_proxy localhost:8000
 }
 ```
@@ -301,38 +267,39 @@ yourdomain.com {
 sudo systemctl enable --now caddy
 ```
 
-Caddy gets the Let's Encrypt cert automatically and proxies WebSockets out of the box. Site is now live at `https://yourdomain.com`.
+Co-hosting with CSAT on the same box? Add a second block routing
+`csat.example.com` to its port — Caddy gets a cert per subdomain automatically.
 
-### 6. Updating
+**nginx** is fully supported too — use
+[`deploy/nginx-live-support.conf.example`](deploy/nginx-live-support.conf.example)
+(it includes the WebSocket upgrade headers `/ws` requires) and `certbot --nginx`.
 
-```bash
-# local
-cd ~/connect/go
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o webrtc-app .
-scp -i key.pem webrtc-app ec2-user@<EC2_IP>:/opt/webrtc-app/webrtc-app.new
-
-# server
-ssh -i key.pem ec2-user@<EC2_IP> \
-  'mv /opt/webrtc-app/webrtc-app.new /opt/webrtc-app/webrtc-app && chmod +x /opt/webrtc-app/webrtc-app && sudo systemctl restart webrtc-app'
-```
-
-### 7. Backups
-
-SQLite data lives in `/opt/webrtc-app/data`. Simple daily snapshot to S3:
+### 4. Updating
 
 ```bash
-# crontab -e
-0 3 * * * aws s3 sync /opt/webrtc-app/data s3://your-bucket/webrtc-app-backup/
+sudo live-support-update              # latest stable within the tracked major (v1)
 ```
 
-(Attach an IAM role with S3 write access to the instance, or configure credentials.)
+It backs up every tenant DB to `/var/lib/live-support/backups/<timestamp>/`
+before swapping the binary and restarting. Automate nightly with
+`systemctl enable --now live-support-update.timer`.
+
+### Build from source (developers)
+
+```bash
+go build -o live-support .                                   # local
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o live-support .   # static Linux binary
+```
+
+The pure-Go SQLite driver makes `CGO_ENABLED=0` work — one fully static binary.
+`make package` produces a release tarball identical to the CI build.
 
 ### Checklist
 
 - [ ] Instance launched, security group: 22 (your IP), 80, 443
-- [ ] Binary cross-compiled and copied
-- [ ] `.env` with Cloudflare TURN credentials on server
-- [ ] systemd service enabled and running
+- [ ] `curl … install.sh | sudo sh` succeeded
+- [ ] `/etc/live-support/live-support.env`: Cloudflare TURN creds + `SECURE_COOKIES=true`
+- [ ] `systemctl enable --now live-support`, `/healthz` returns `ok`
 - [ ] DNS A record → instance IP
-- [ ] Caddy running, HTTPS works
+- [ ] Caddy (or nginx) running, HTTPS works
 - [ ] Test: guest page loads, agent sign-in works (`/login?ref=...`), call connects

@@ -1,0 +1,26 @@
+# Caddy reverse proxy for Live Support — the recommended front.
+#
+# Caddy fetches and auto-renews a Let's Encrypt certificate for the domain and
+# proxies WebSockets transparently (no extra config needed for /ws). Install
+# Caddy (https://caddyserver.com/docs/install), drop this in /etc/caddy/Caddyfile,
+# then: systemctl reload caddy
+#
+# Live Support listens on 127.0.0.1:8000 (loopback) — only Caddy reaches it.
+
+live-support.example.com {
+    reverse_proxy localhost:8000
+}
+
+# ── Co-hosting with CSAT on one box ──────────────────────────────────────────
+# Each app listens on its own loopback port; Caddy routes by subdomain and gets
+# one cert per name automatically. Uncomment and adjust:
+#
+# csat.example.com {
+#     reverse_proxy localhost:8080
+# }
+# live-support.example.com {
+#     reverse_proxy localhost:8000
+# }
+#
+# Open only 80 + 443 inbound on the host. WebRTC media is peer-to-peer / relayed
+# via Cloudflare TURN, so no UDP port ranges are needed here.

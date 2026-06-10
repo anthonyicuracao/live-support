@@ -1,4 +1,6 @@
 .env
 .DS_Store
-go/data/
-go/webrtc-app
+data/
+dist/
+live-support
+webrtc-app

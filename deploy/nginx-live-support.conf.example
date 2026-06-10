@@ -1,0 +1,43 @@
+# Reverse-proxy vhost for Live Support — serves https://live-support.example.com
+# from the local service on 127.0.0.1:8000. Caddy (see Caddyfile.example) is the
+# recommended front; use this if your host already runs nginx.
+#
+# Drop in /etc/nginx/sites-available (or conf.d), enable, and obtain a cert with
+# `certbot --nginx` (it fills in the ssl_certificate lines below).
+#
+# NOTE: Live Support uses WebSockets (/ws) for presence and call signaling, so
+# the connection-upgrade headers and a long read timeout below are required.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name live-support.example.com;
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name live-support.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/live-support.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/live-support.example.com/privkey.pem;
+
+    # WebSocket signaling — must upgrade the connection and not time out early.
+    location /ws {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+        proxy_read_timeout 3600s;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
+}
