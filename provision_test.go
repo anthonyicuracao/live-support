@@ -10,7 +10,7 @@ import (
 
 func provisionToken(t *testing.T, ref string) string {
 	t.Helper()
-	tok, err := encryptSSO("test-connect-secret", ref, provisionSentinel, "admin", time.Now().Unix())
+	tok, err := mintApplianceToken("test-connect-secret", ref, "", "", "", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +74,9 @@ func TestProvisionRejectsBadToken(t *testing.T) {
 	if code, _ := postForm(t, newClient(t), srv.URL+"/provision?t=garbage", url.Values{}); code != 403 {
 		t.Fatalf("garbage token: want 403, got %d", code)
 	}
-	// A normal SSO token (real username, not the sentinel) must not provision.
-	tok, _ := encryptSSO("test-connect-secret", testRef, "alice", "admin", time.Now().Unix())
+	// A token signed with the wrong secret must not validate.
+	tok, _ := mintApplianceToken("a-totally-different-secret-value", testRef, "", "", "", time.Hour)
 	if code, _ := postForm(t, newClient(t), srv.URL+"/provision?t="+tok, url.Values{}); code != 403 {
-		t.Fatalf("non-sentinel sso: want 403, got %d", code)
+		t.Fatalf("wrong-secret token: want 403, got %d", code)
 	}
 }

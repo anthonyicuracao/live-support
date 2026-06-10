@@ -545,24 +545,12 @@ func sweepResets(db *sql.DB) {
 	_, _ = db.Exec(`DELETE FROM password_resets WHERE used_at IS NULL AND expires_at < ?`, time.Now().Unix())
 }
 
-// ───────────────────────── platform SSO tokens ────────────────────────
+// ───────────────────────── platform appliance tokens ──────────────────────
 //
-// Signed single-purpose sign-in links, using the same opaque-token recipe as
-// the csat project: AES-256-GCM(key, payload) where key = SHA-256(secret),
-// with a fresh random 12-byte nonce prepended and the result base64url
-// encoded. The payload is "ref|unixSeconds|username|role". Tampering makes
-// decryption fail, so no separate HMAC is needed.
-//
-// A platform that knows the shared CONNECT_SECRET can mint short-lived links
-// (/sso?t=<token>) that sign a user straight into the agent dashboard —
-// no second login. The platform's link-builder MUST construct tokens with the
-// identical scheme (see README for the canonical recipe).
-
-// ssoTTL is how long a minted SSO link stays valid.
-const ssoTTL = 10 * time.Minute
-
-// errInvalidSSO is returned for any malformed, tampered, or expired token.
-var errInvalidSSO = errors.New("invalid sso token")
+// Opaque tokens use AES-256-GCM(key, payload), key = SHA-256(secret), with a
+// fresh 12-byte nonce prepended and the result base64url-encoded. The platform
+// signs "SEC|payload" (see appliance.go for the SEC layout + parsing); ssoGCM
+// and ssoNonceSize are the shared crypto primitives.
 
 func ssoGCM(secret string) (cipher.AEAD, error) {
 	key := sha256.Sum256([]byte(secret))
@@ -574,54 +562,6 @@ func ssoGCM(secret string) (cipher.AEAD, error) {
 }
 
 const ssoNonceSize = 12
-
-// encryptSSO builds a SSO token. Exposed mainly for parity with the
-// platform-side recipe and for local testing; the platform mints these.
-func encryptSSO(secret, ref, username, role string, ts int64) (string, error) {
-	for _, s := range []string{ref, username, role} {
-		if strings.Contains(s, "|") {
-			return "", errors.New("sso fields must not contain '|'")
-		}
-	}
-	gcm, err := ssoGCM(secret)
-	if err != nil {
-		return "", err
-	}
-	nonce := make([]byte, ssoNonceSize)
-	if _, err := rand.Read(nonce); err != nil {
-		return "", err
-	}
-	pt := ref + "|" + strconv.FormatInt(ts, 10) + "|" + username + "|" + role
-	sealed := gcm.Seal(nonce, nonce, []byte(pt), nil) // nonce || ciphertext||tag
-	return base64.RawURLEncoding.EncodeToString(sealed), nil
-}
-
-// decryptSSO validates a token and returns its fields. It returns
-// errInvalidSSO for anything that does not decrypt to the expected
-// four-field payload; expiry is checked by the caller.
-func decryptSSO(secret, tok string) (ref, username, role string, ts int64, err error) {
-	raw, err := base64.RawURLEncoding.DecodeString(tok)
-	if err != nil || len(raw) < ssoNonceSize {
-		return "", "", "", 0, errInvalidSSO
-	}
-	gcm, err := ssoGCM(secret)
-	if err != nil {
-		return "", "", "", 0, err
-	}
-	pt, err := gcm.Open(nil, raw[:ssoNonceSize], raw[ssoNonceSize:], nil)
-	if err != nil {
-		return "", "", "", 0, errInvalidSSO
-	}
-	parts := strings.Split(string(pt), "|")
-	if len(parts) != 4 || parts[0] == "" || parts[2] == "" {
-		return "", "", "", 0, errInvalidSSO
-	}
-	ts, err = strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return "", "", "", 0, errInvalidSSO
-	}
-	return parts[0], parts[2], parts[3], ts, nil
-}
 
 // ensureConnectSecret returns CONNECT_SECRET, generating one on first run.
 //
@@ -821,7 +761,8 @@ type authApp struct {
 
 	adminUsername  string
 	adminInitialPW string
-	ssoSecret      string // shared secret for platform SSO links
+	ssoSecret      string   // shared secret for platform SSO links
+	corsOrigins    []string // browser origins allowed to read /provision cross-origin
 	throttle       *loginThrottle
 	bootstrapped   sync.Map // ref -> true, once the tenant has been checked
 }
@@ -872,10 +813,22 @@ func newAuthApp() (*authApp, error) {
 		adminUsername:  adminUsername,
 		adminInitialPW: strings.TrimSpace(os.Getenv("ADMIN_INITIAL_PASSWORD")),
 		ssoSecret:      ensureConnectSecret(),
+		corsOrigins:    splitCommaList(os.Getenv("CORS_ORIGINS")),
 		throttle:       newLoginThrottle(),
 	}
 	go a.sweepLoop()
 	return a, nil
+}
+
+// splitCommaList parses a comma-separated env value into trimmed, non-empty entries.
+func splitCommaList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (a *authApp) sweepLoop() {
@@ -1293,14 +1246,13 @@ func (a *authApp) sso(w http.ResponseWriter, r *http.Request) {
 		failed()
 		return
 	}
-	ref, username, role, ts, err := decryptSSO(a.ssoSecret, tok)
-	now := time.Now().Unix()
-	// Short-lived: reject expired tokens and (beyond small clock skew) tokens
-	// from the future.
-	if err != nil || now-ts > int64(ssoTTL.Seconds()) || ts-now > 60 {
+	sec, _, err := parseAppliance(a.ssoSecret, tok)
+	if err != nil || sec.User == "" {
 		failed()
 		return
 	}
+	ref, username, role := sec.Ref, sec.User, sec.Role
+	now := time.Now().Unix()
 	db := tenantDB(ref)
 	if db == nil {
 		failed()

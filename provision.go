@@ -3,15 +3,7 @@ package main
 import (
 	"net/http"
 	"net/url"
-	"time"
 )
-
-// provisionSentinel marks a SSO token as a tenant-provisioning request (vs.
-// a real sign-in). The platform mints it with the shared CONNECT_SECRET, exactly
-// like a SSO link but with the username set to this sentinel:
-//
-//	encryptSSO(CONNECT_SECRET, ref, ProvisionSentinel, "admin", now)
-const provisionSentinel = "__provision__"
 
 // provision creates (or ensures) a tenant from a platform-signed token and
 // returns an admin invite link as JSON. The customer opens the link, sets their
@@ -21,6 +13,16 @@ const provisionSentinel = "__provision__"
 // account (the forgot-password break-glass). Authorized solely by the shared
 // secret, so only the platform can call it.
 func (a *authApp) provision(w http.ResponseWriter, r *http.Request) {
+	// Let an allow-listed platform admin page read the invite link cross-origin.
+	if origin := r.Header.Get("Origin"); origin != "" {
+		for _, o := range a.corsOrigins {
+			if o == origin {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				break
+			}
+		}
+	}
 	if a.ssoSecret == "" {
 		http.Error(w, "provisioning is disabled (no CONNECT_SECRET)", http.StatusBadRequest)
 		return
@@ -30,13 +32,12 @@ func (a *authApp) provision(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		tok = r.PostFormValue("t")
 	}
-	ref, username, _, ts, err := decryptSSO(a.ssoSecret, tok)
-	now := time.Now().Unix()
-	if err != nil || username != provisionSentinel || ref == "" ||
-		now-ts > int64(ssoTTL.Seconds()) || ts-now > 60 {
+	sec, _, err := parseAppliance(a.ssoSecret, tok)
+	if err != nil {
 		http.Error(w, "invalid provisioning token", http.StatusForbidden)
 		return
 	}
+	ref := sec.Ref
 
 	db := tenantDB(ref)
 	if db == nil {
