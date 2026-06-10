@@ -106,24 +106,24 @@ Agents authenticate against the server itself — no external identity provider,
 
 **First run (per tenant)** — the first time a tenant's login page is used, an initial admin account is created from `ADMIN_USERNAME` / `ADMIN_INITIAL_PASSWORD`. If no password is configured, a temporary one is generated and printed to the server log; it must be changed on first login.
 
-**Platform hand-off (optional)** — an external platform that knows the deployment's `CONNECT_SECRET` can mint short-lived signed links that sign a user straight into the dashboard, no second login:
+**Platform SSO (optional)** — an external platform that knows the deployment's `CONNECT_SECRET` can mint short-lived signed links that sign a user straight into the dashboard, no second login:
 
 ```
-https://your-connect-host/handoff?t=<token>
+https://your-connect-host/sso?t=<token>
 ```
 
-The token is `base64url( nonce(12) + AES-256-GCM(key, "ref|unixSeconds|username|role") )` with `key = SHA-256(CONNECT_SECRET)` — the same opaque-token recipe the csat project uses for its survey links. Links expire after 10 minutes. Unknown usernames are auto-provisioned in the tenant (password-less — they can only enter via hand-off until an admin issues a reset link). Canonical link-builder (Node.js, for the platform side):
+The token is `base64url( nonce(12) + AES-256-GCM(key, "ref|unixSeconds|username|role") )` with `key = SHA-256(CONNECT_SECRET)` — the same opaque-token recipe the csat project uses for its survey links. Links expire after 10 minutes. Unknown usernames are auto-provisioned in the tenant (password-less — they can only enter via SSO until an admin issues a reset link). Canonical link-builder (Node.js, for the platform side):
 
 ```js
 const crypto = require("crypto");
 
-function buildHandoffLink(connectUrl, secret, ref, username, isAdmin) {
+function buildSSOLink(connectUrl, secret, ref, username, isAdmin) {
   const key = crypto.createHash("sha256").update(secret).digest();
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
   const payload = `${ref}|${Math.floor(Date.now() / 1000)}|${username}|${isAdmin ? "admin" : "agent"}`;
   const ct = Buffer.concat([cipher.update(payload, "utf8"), cipher.final(), cipher.getAuthTag()]);
-  return `${connectUrl}/handoff?t=${Buffer.concat([nonce, ct]).toString("base64url")}`;
+  return `${connectUrl}/sso?t=${Buffer.concat([nonce, ct]).toString("base64url")}`;
 }
 ```
 
@@ -174,7 +174,7 @@ All settings come from environment variables or a `.env` file beside the binary.
 | `INVITE_TTL_HOURS` | `72` | Invite-link lifetime. |
 | `RESET_TTL_HOURS` | `24` | Password-reset-link lifetime. |
 | `SECURE_COOKIES` | `false` | Set `true` when serving over HTTPS so cookies are marked `Secure`. |
-| `CONNECT_SECRET` | *(generated)* | Shared secret for platform sign-in hand-off links (`/handoff`). Auto-generated, persisted under `DATA_DIR` (`data/connect_secret`), and logged on first run if unset; the config file is never modified. See §1.7. |
+| `CONNECT_SECRET` | *(generated)* | Shared secret for platform sign-in SSO links (`/sso`). Auto-generated, persisted under `DATA_DIR` (`data/connect_secret`), and logged on first run if unset; the config file is never modified. See §1.7. |
 | `SITE_NAME` | `Live Support` | Name shown on the sign-in and user-management pages. |
 | `PRIMARY_COLOR` | *(empty)* | Optional brand color applied to the UI at runtime (overrides the CSS `--primary` variable). Accepts any CSS color — hex (`#7646b9`), `rgb()/rgba()`, `hsl()/hsla()`, or a named color. Invalid or empty values fall back to the stylesheet default. |
 | `FAVICON_URL` | *(empty)* | Optional favicon override applied at runtime. Accepts an absolute `http(s)://` URL or a same-origin path (`/...`). Invalid or empty values fall back to the bundled `/public/favicon.svg`. |

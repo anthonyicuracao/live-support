@@ -545,7 +545,7 @@ func sweepResets(db *sql.DB) {
 	_, _ = db.Exec(`DELETE FROM password_resets WHERE used_at IS NULL AND expires_at < ?`, time.Now().Unix())
 }
 
-// ───────────────────────── platform hand-off tokens ────────────────────────
+// ───────────────────────── platform SSO tokens ────────────────────────
 //
 // Signed single-purpose sign-in links, using the same opaque-token recipe as
 // the csat project: AES-256-GCM(key, payload) where key = SHA-256(secret),
@@ -554,17 +554,17 @@ func sweepResets(db *sql.DB) {
 // decryption fail, so no separate HMAC is needed.
 //
 // A platform that knows the shared CONNECT_SECRET can mint short-lived links
-// (/handoff?t=<token>) that sign a user straight into the agent dashboard —
+// (/sso?t=<token>) that sign a user straight into the agent dashboard —
 // no second login. The platform's link-builder MUST construct tokens with the
 // identical scheme (see README for the canonical recipe).
 
-// handoffTTL is how long a minted hand-off link stays valid.
-const handoffTTL = 10 * time.Minute
+// ssoTTL is how long a minted SSO link stays valid.
+const ssoTTL = 10 * time.Minute
 
-// errInvalidHandoff is returned for any malformed, tampered, or expired token.
-var errInvalidHandoff = errors.New("invalid handoff token")
+// errInvalidSSO is returned for any malformed, tampered, or expired token.
+var errInvalidSSO = errors.New("invalid sso token")
 
-func handoffGCM(secret string) (cipher.AEAD, error) {
+func ssoGCM(secret string) (cipher.AEAD, error) {
 	key := sha256.Sum256([]byte(secret))
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
@@ -573,21 +573,21 @@ func handoffGCM(secret string) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-const handoffNonceSize = 12
+const ssoNonceSize = 12
 
-// encryptHandoff builds a hand-off token. Exposed mainly for parity with the
+// encryptSSO builds a SSO token. Exposed mainly for parity with the
 // platform-side recipe and for local testing; the platform mints these.
-func encryptHandoff(secret, ref, username, role string, ts int64) (string, error) {
+func encryptSSO(secret, ref, username, role string, ts int64) (string, error) {
 	for _, s := range []string{ref, username, role} {
 		if strings.Contains(s, "|") {
-			return "", errors.New("handoff fields must not contain '|'")
+			return "", errors.New("sso fields must not contain '|'")
 		}
 	}
-	gcm, err := handoffGCM(secret)
+	gcm, err := ssoGCM(secret)
 	if err != nil {
 		return "", err
 	}
-	nonce := make([]byte, handoffNonceSize)
+	nonce := make([]byte, ssoNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
@@ -596,29 +596,29 @@ func encryptHandoff(secret, ref, username, role string, ts int64) (string, error
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
-// decryptHandoff validates a token and returns its fields. It returns
-// errInvalidHandoff for anything that does not decrypt to the expected
+// decryptSSO validates a token and returns its fields. It returns
+// errInvalidSSO for anything that does not decrypt to the expected
 // four-field payload; expiry is checked by the caller.
-func decryptHandoff(secret, tok string) (ref, username, role string, ts int64, err error) {
+func decryptSSO(secret, tok string) (ref, username, role string, ts int64, err error) {
 	raw, err := base64.RawURLEncoding.DecodeString(tok)
-	if err != nil || len(raw) < handoffNonceSize {
-		return "", "", "", 0, errInvalidHandoff
+	if err != nil || len(raw) < ssoNonceSize {
+		return "", "", "", 0, errInvalidSSO
 	}
-	gcm, err := handoffGCM(secret)
+	gcm, err := ssoGCM(secret)
 	if err != nil {
 		return "", "", "", 0, err
 	}
-	pt, err := gcm.Open(nil, raw[:handoffNonceSize], raw[handoffNonceSize:], nil)
+	pt, err := gcm.Open(nil, raw[:ssoNonceSize], raw[ssoNonceSize:], nil)
 	if err != nil {
-		return "", "", "", 0, errInvalidHandoff
+		return "", "", "", 0, errInvalidSSO
 	}
 	parts := strings.Split(string(pt), "|")
 	if len(parts) != 4 || parts[0] == "" || parts[2] == "" {
-		return "", "", "", 0, errInvalidHandoff
+		return "", "", "", 0, errInvalidSSO
 	}
 	ts, err = strconv.ParseInt(parts[1], 10, 64)
 	if err != nil {
-		return "", "", "", 0, errInvalidHandoff
+		return "", "", "", 0, errInvalidSSO
 	}
 	return parts[0], parts[2], parts[3], ts, nil
 }
@@ -641,7 +641,7 @@ func ensureConnectSecret() string {
 	}
 	path := filepath.Join(dataDir, "connect_secret")
 
-	// Reuse a previously generated secret so hand-off links survive restarts.
+	// Reuse a previously generated secret so SSO links survive restarts.
 	if b, err := os.ReadFile(path); err == nil {
 		if s := strings.TrimSpace(string(b)); s != "" {
 			os.Setenv("CONNECT_SECRET", s)
@@ -658,7 +658,7 @@ func ensureConnectSecret() string {
 		log.Printf("[Auth] generated CONNECT_SECRET and saved it to %s", path)
 	}
 	log.Printf("[Auth] CONNECT_SECRET: %s", secret)
-	log.Printf("[Auth]     paste it into the platform's integration settings to enable sign-in hand-off links")
+	log.Printf("[Auth]     paste it into the platform's integration settings to enable sign-in SSO links")
 	os.Setenv("CONNECT_SECRET", secret)
 	return secret
 }
@@ -821,7 +821,7 @@ type authApp struct {
 
 	adminUsername  string
 	adminInitialPW string
-	handoffSecret  string // shared secret for platform hand-off links
+	ssoSecret      string // shared secret for platform SSO links
 	throttle       *loginThrottle
 	bootstrapped   sync.Map // ref -> true, once the tenant has been checked
 }
@@ -871,7 +871,7 @@ func newAuthApp() (*authApp, error) {
 		resetTTL:       envHours("RESET_TTL_HOURS", 24),
 		adminUsername:  adminUsername,
 		adminInitialPW: strings.TrimSpace(os.Getenv("ADMIN_INITIAL_PASSWORD")),
-		handoffSecret:  ensureConnectSecret(),
+		ssoSecret:      ensureConnectSecret(),
 		throttle:       newLoginThrottle(),
 	}
 	go a.sweepLoop()
@@ -937,7 +937,7 @@ func (a *authApp) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /forgot", a.forgot)
 	mux.HandleFunc("GET /reset", a.resetForm)
 	mux.HandleFunc("POST /reset", a.reset)
-	mux.HandleFunc("GET /handoff", a.handoff)
+	mux.HandleFunc("GET /sso", a.sso)
 	// platform tenant provisioning (token-signed; returns an admin invite link)
 	mux.HandleFunc("POST /provision", a.provision)
 
@@ -1274,12 +1274,12 @@ func (a *authApp) logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login?ref="+url.QueryEscape(info.ref), http.StatusSeeOther)
 }
 
-// handoff signs a user in via a platform-minted token (see the hand-off token
+// sso signs a user in via a platform-minted token (see the SSO token
 // section above). Unknown usernames are auto-provisioned in the tenant with an
-// empty password hash — such accounts can only ever enter through hand-off
+// empty password hash — such accounts can only ever enter through SSO
 // links (password verification always fails on an empty hash) until an admin
 // issues a reset link to set a real password.
-func (a *authApp) handoff(w http.ResponseWriter, r *http.Request) {
+func (a *authApp) sso(w http.ResponseWriter, r *http.Request) {
 	failed := func() {
 		a.render(w, http.StatusOK, "login.tmpl", loginView{
 			base:     a.publicBase(""),
@@ -1289,15 +1289,15 @@ func (a *authApp) handoff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok := r.URL.Query().Get("t")
-	if a.handoffSecret == "" || tok == "" {
+	if a.ssoSecret == "" || tok == "" {
 		failed()
 		return
 	}
-	ref, username, role, ts, err := decryptHandoff(a.handoffSecret, tok)
+	ref, username, role, ts, err := decryptSSO(a.ssoSecret, tok)
 	now := time.Now().Unix()
 	// Short-lived: reject expired tokens and (beyond small clock skew) tokens
 	// from the future.
-	if err != nil || now-ts > int64(handoffTTL.Seconds()) || ts-now > 60 {
+	if err != nil || now-ts > int64(ssoTTL.Seconds()) || ts-now > 60 {
 		failed()
 		return
 	}

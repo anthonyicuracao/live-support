@@ -10,7 +10,7 @@ import (
 
 func provisionToken(t *testing.T, ref string) string {
 	t.Helper()
-	tok, err := encryptHandoff("test-connect-secret", ref, provisionSentinel, "admin", time.Now().Unix())
+	tok, err := encryptSSO("test-connect-secret", ref, provisionSentinel, "admin", time.Now().Unix())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func redeemAdmin(t *testing.T, link, ref, username, pass string) {
 }
 
 // TestProvisionAdminInviteAndReclaim: the platform provisions a password-capable
-// admin (the standalone-login counterpart to SSO /handoff); a repeat with the
+// admin (the standalone-login counterpart to SSO /sso); a repeat with the
 // same email reclaims that account (forgot-password break-glass).
 func TestProvisionAdminInviteAndReclaim(t *testing.T) {
 	srv, _ := newServer(t)
@@ -74,9 +74,9 @@ func TestProvisionRejectsBadToken(t *testing.T) {
 	if code, _ := postForm(t, newClient(t), srv.URL+"/provision?t=garbage", url.Values{}); code != 403 {
 		t.Fatalf("garbage token: want 403, got %d", code)
 	}
-	// A normal hand-off token (real username, not the sentinel) must not provision.
-	tok, _ := encryptHandoff("test-connect-secret", testRef, "alice", "admin", time.Now().Unix())
+	// A normal SSO token (real username, not the sentinel) must not provision.
+	tok, _ := encryptSSO("test-connect-secret", testRef, "alice", "admin", time.Now().Unix())
 	if code, _ := postForm(t, newClient(t), srv.URL+"/provision?t="+tok, url.Values{}); code != 403 {
-		t.Fatalf("non-sentinel handoff: want 403, got %d", code)
+		t.Fatalf("non-sentinel sso: want 403, got %d", code)
 	}
 }
