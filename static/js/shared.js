@@ -2,6 +2,60 @@
 // Shared utilities for both auth and guest pages.
 // Exposed as window.Shared. Uses window.Realtime + window.DB (see config.js).
 
+// VENDORED from hy-rag/public/js-lib.js (window.getInput) — keep in sync. A
+// styled prompt() replacement (promise → string|false), brightness-aware. Used
+// for the guest name prompt instead of the native prompt().
+window.getInput = window.getInput || function getInput(message, defaultValue, placeholder, icon, container) {
+  return new Promise((resolve) => {
+    defaultValue = (defaultValue == null) ? '' : String(defaultValue);
+    placeholder = (placeholder == null) ? '' : String(placeholder);
+    icon = typeof icon === 'string' ? icon : null;
+    const parent = (container instanceof Element) ? container : document.body;
+    const bodyBg = window.getComputedStyle(parent).backgroundColor;
+    const rgb = bodyBg.match(/\d+/g);
+    const [r, g, b] = rgb ? rgb.map(Number) : [255, 255, 255];
+    const isDark = (0.2126 * r + 0.7152 * g + 0.0722 * b) < 128;
+    const overlayBg = isDark ? 'rgba(0,0,0,0.7)' : 'rgba(0,0,0,0.5)';
+    const dialogBg = isDark ? '#2c2c2c' : '#ffffff';
+    const textColor = isDark ? '#e0e0e0' : '#212529';
+    const inputBg = isDark ? '#1e1e1e' : '#ffffff';
+    const borderCol = isDark ? '#555555' : '#ced4da';
+    const okBg = isDark ? '#3a6ea5' : '#2563eb';
+    const iconMap = { EXCLAMATION: '⚠️', HAND: '✋', QUESTION: '❓' };
+    const iconChar = icon ? (iconMap[icon] || icon) : '';
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, { position: 'fixed', inset: '0', background: overlayBg, zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center' });
+    const dialog = document.createElement('div');
+    Object.assign(dialog.style, { background: dialogBg, color: textColor, borderRadius: '10px', padding: '20px', minWidth: '280px', maxWidth: '90vw', boxShadow: '0 10px 40px rgba(0,0,0,0.3)', fontFamily: 'system-ui, -apple-system, sans-serif' });
+    const msg = document.createElement('div');
+    msg.textContent = (iconChar ? iconChar + '  ' : '') + (message || '');
+    Object.assign(msg.style, { marginBottom: '14px', fontSize: '15px', lineHeight: '1.4' });
+    const input = document.createElement('input');
+    input.type = 'text'; input.value = defaultValue; input.placeholder = placeholder;
+    Object.assign(input.style, { width: '100%', boxSizing: 'border-box', padding: '10px 12px', fontSize: '15px', border: '1px solid ' + borderCol, borderRadius: '6px', background: inputBg, color: textColor, outline: 'none', marginBottom: '16px' });
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '8px', justifyContent: 'flex-end' });
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    Object.assign(cancelBtn.style, { padding: '8px 16px', fontSize: '14px', borderRadius: '6px', cursor: 'pointer', border: '1px solid ' + borderCol, background: 'transparent', color: textColor });
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'OK';
+    Object.assign(okBtn.style, { padding: '8px 16px', fontSize: '14px', borderRadius: '6px', cursor: 'pointer', border: 'none', background: okBg, color: '#ffffff' });
+    function cleanup() { document.removeEventListener('keydown', keyH); overlay.remove(); }
+    function submit() { const v = input.value; cleanup(); resolve(v); }
+    function cancel() { cleanup(); resolve(false); }
+    function keyH(e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } else if (e.key === 'Escape') { e.preventDefault(); cancel(); } }
+    okBtn.addEventListener('click', submit);
+    cancelBtn.addEventListener('click', cancel);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+    document.addEventListener('keydown', keyH);
+    row.appendChild(cancelBtn); row.appendChild(okBtn);
+    dialog.appendChild(msg); dialog.appendChild(input); dialog.appendChild(row);
+    overlay.appendChild(dialog); parent.appendChild(overlay);
+    input.focus(); input.select();
+  });
+};
+
 window.Shared = (() => {
   // ─── URL Params ──────────────────────────────────────────────────────────
   function getUrlParams() {
@@ -20,10 +74,12 @@ window.Shared = (() => {
    * and reload the page with it added to the URL.
    * Returns true if a redirect is happening (caller should stop execution).
    */
-  function ensureNameParam() {
+  async function ensureNameParam() {
     const p = new URLSearchParams(window.location.search);
     if (!p.get("name")) {
-      const name = prompt("Please enter your name:");
+      const name = window.getInput
+        ? await window.getInput("Please enter your name:", "", "Your name")
+        : prompt("Please enter your name:");
       if (name && name.trim()) {
         p.set("name", name.trim());
         window.location.search = p.toString();

@@ -6,7 +6,7 @@
   if (!window.Realtime || !window.DB) return; // Config failed to load
 
   const S = window.Shared;
-  if (S.ensureNameParam()) return; // Prompt for name and reload
+  if (await S.ensureNameParam()) return; // Prompt for name and reload
   const params = S.getUrlParams();
 
   // ─── Greeting ──────────────────────────────────────────────────────────
