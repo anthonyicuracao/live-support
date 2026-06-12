@@ -310,5 +310,5 @@ No changes to the guest page itself are required — it is ready to receive thes
 
 ## License
 
-MIT — see [LICENSE](LICENSE). © 2026 Ron Pinkas and Anthony Elshafei.
+MIT — see [LICENSE](LICENSE). © 2026 Anthony Elshafei and Ron Pinkas.
 
