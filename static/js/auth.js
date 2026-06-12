@@ -833,6 +833,12 @@
   // Safari fires focus more reliably than visibilitychange when the window
   // (not just the tab) regains attention — cover both.
   window.addEventListener("focus", () => checkPendingInvites());
+  // Safety net for a silently-dead WebSocket (e.g. after laptop sleep): a
+  // focused tab suppresses the OS push notification AND a dead socket never
+  // delivers the WS ring — without this poll that combination misses the call
+  // while the agent is looking right at the console. Guarded inside
+  // checkPendingInvites (only runs when ready + Available).
+  setInterval(checkPendingInvites, 10000);
 
   // ─── Push status indicator ─────────────────────────────────────────────
   // Make the otherwise-invisible push state visible: are background call alerts
@@ -1136,10 +1142,23 @@
     }
   }
 
+  // Consume the server-side pending invite for a call we've answered (or
+  // declined) — otherwise the pending-invite poll would ghost-re-ring it
+  // within its 30s TTL after the call ends.
+  function clearPendingInvite(callId) {
+    if (!callId) return;
+    fetch("/api/call/ring/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callId }),
+    }).catch(() => {});
+  }
+
   // ─── Accept incoming call ──────────────────────────────────────────────
   document.querySelector(".accept-call-button").addEventListener("click", async () => {
     if (state !== "incoming") return;
     clearTimeout(incomingTimeoutTimer);
+    clearPendingInvite(currentCallId);
     S.stopRingtone();
     S.clearIncomingNotification();
     S.hideSection(".call-incoming");
@@ -1168,6 +1187,7 @@
   // ─── Decline incoming call ─────────────────────────────────────────────
   document.querySelector(".decline-call-button").addEventListener("click", async () => {
     if (state !== "incoming") return;
+    clearPendingInvite(currentCallId);
     S.stopRingtone();
     S.clearIncomingNotification();
     S.hideSection(".call-incoming");
