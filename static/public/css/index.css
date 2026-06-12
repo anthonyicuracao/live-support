@@ -871,3 +871,28 @@ button,
 .call-guest-user-status {
   font-weight: 500 !important;
 }
+
+/* Agent video-mode picker (auth.html). Audio is implicit; this opts into video
+   before going Available (camera is requested only at that step). */
+.video-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.25rem;
+  max-width: 28rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.video-mode input {
+  width: auto;
+  margin-top: 0.2rem;
+  flex: none;
+}
+.video-mode input:disabled {
+  opacity: 0.5;
+}
+.video-mode__hint {
+  color: var(--dark);
+  opacity: 0.6;
+  font-size: 0.85rem;
+}

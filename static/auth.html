@@ -81,13 +81,22 @@
         <div class="availability">
           <label class="availability__switch">
             <!-- Disabled until auth.js wires up the change handler so an
-                 early click can't flip the UI without a real status update. -->
-            <input type="checkbox" id="availability-toggle" checked disabled />
+                 early click can't flip the UI without a real status update.
+                 Defaults Paused (unchecked) — auth.js sets the real state. -->
+            <input type="checkbox" id="availability-toggle" disabled />
             <span class="availability__slider"></span>
           </label>
           <span class="availability__label">Available for calls</span>
-          <span class="availability__state" id="availability-state">✅</span>
+          <span class="availability__state" id="availability-state">🛑</span>
         </div>
+        <!-- Mode picker: choose video BEFORE going available; camera/mic are
+             requested only at Go-Available. Disabled while Available. -->
+        <label class="video-mode">
+          <input type="checkbox" id="video-mode-toggle" />
+          <span class="video-mode__label">Accept video calls
+            <span class="video-mode__hint">— camera is requested only when you go Available</span>
+          </span>
+        </label>
         <!-- Public display name shown to guests during calls and chat.
              Disabled until auth.js wires up the input. -->
         <div class="display-name">

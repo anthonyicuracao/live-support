@@ -376,13 +376,26 @@
   // Reflect persisted state in the UI and wire up the change handler.
   const availabilityInput = document.getElementById("availability-toggle");
   const availabilityStateEl = document.getElementById("availability-state");
+  const videoModeInput = document.getElementById("video-mode-toggle");
   function renderAvailabilityUI() {
     if (availabilityInput) availabilityInput.checked = isAvailable;
     if (availabilityStateEl) {
       availabilityStateEl.textContent = isAvailable ? "✅" : "🛑";
     }
+    if (videoModeInput) {
+      videoModeInput.checked = wantsVideo;
+      videoModeInput.disabled = isAvailable; // lock the mode choice while available
+    }
   }
   renderAvailabilityUI();
+
+  // Video-mode picker: editable only while Paused; saved per-browser.
+  if (videoModeInput) {
+    videoModeInput.addEventListener("change", () => {
+      wantsVideo = videoModeInput.checked;
+      saveVideoPref(wantsVideo);
+    });
+  }
 
   if (availabilityInput) {
     // Enable the input now that we're about to attach the change handler;
