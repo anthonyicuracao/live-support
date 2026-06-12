@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="/public/css/normalize.css" />
-    <link rel="stylesheet" href="/public/css/index.css" />
-    <link rel="stylesheet" href="/public/css/auth.css" />
+    <link rel="stylesheet" href="/public/css/normalize.css?v=__APP_VERSION__" />
+    <link rel="stylesheet" href="/public/css/index.css?v=__APP_VERSION__" />
+    <link rel="stylesheet" href="/public/css/auth.css?v=__APP_VERSION__" />
     <link
       rel="icon"
       href="/public/favicon.svg"
@@ -13,9 +13,15 @@
       type="image/svg+xml"
     />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="app-version" content="__APP_VERSION__" />
     <title>Dashboard</title>
   </head>
   <body>
+    <!-- Stale-version banner: shown when the loaded page is older than the
+         server build (a cached copy). Clicking refreshes past the cache. -->
+    <button type="button" id="update-banner" class="update-banner" style="display: none">
+      A newer version is available — tap to update.
+    </button>
     <!-- Session check loading screen — shown while auth.js confirms the
          signed-in session (/api/me). Hidden on success; signed-out visitors
          are redirected to /login. -->
@@ -371,9 +377,37 @@
       </section>
     </main>
     <!-- App scripts (APP_CONFIG is injected by server before </head>) -->
-    <script src="/js/config.js"></script>
-    <script src="/js/shared.js"></script>
-    <script src="/js/push.js"></script>
-    <script src="/js/auth.js"></script>
+    <!-- Build version (stamped server-side) + a tiny footer the user can read -->
+    <p class="app-version" id="app-version"></p>
+    <script>
+      // Self-check: compare the version baked into this (cached or fresh) page
+      // against the server's current build. On a mismatch the page is a stale
+      // cached copy — show the update banner; clicking it reloads past the cache
+      // via a versioned URL (the ?_v guard prevents a reload loop).
+      (function () {
+        var meta = document.querySelector('meta[name="app-version"]');
+        var loaded = meta ? meta.content : "";
+        var footer = document.getElementById("app-version");
+        if (footer) footer.textContent = "build " + (loaded || "?");
+        if (location.search.indexOf("_v=") !== -1) return; // already refreshed once
+        fetch("/api/connect-config")
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (c) {
+            if (!c || !c.version || !loaded || c.version === loaded) return;
+            var banner = document.getElementById("update-banner");
+            if (!banner) return;
+            banner.style.display = "";
+            banner.addEventListener("click", function () {
+              var sep = location.search ? "&" : "?";
+              location.href = location.pathname + location.search + sep + "_v=" + encodeURIComponent(c.version);
+            });
+          })
+          .catch(function () {});
+      })();
+    </script>
+    <script src="/js/config.js?v=__APP_VERSION__"></script>
+    <script src="/js/shared.js?v=__APP_VERSION__"></script>
+    <script src="/js/push.js?v=__APP_VERSION__"></script>
+    <script src="/js/auth.js?v=__APP_VERSION__"></script>
   </body>
 </html>

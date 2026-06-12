@@ -109,6 +109,38 @@ body {
 }
 .auth-user .push-status__btn:hover { filter: brightness(0.95); }
 
+/* Stale-version update banner — a tappable full-width top bar. */
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  z-index: 2000;
+  border: none;
+  padding: 11px 14px;
+  background: #1d4ed8;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: center;
+}
+.update-banner:hover { background: #1e40af; }
+
+/* Build-version footer — unobtrusive, bottom-left. */
+.app-version {
+  position: fixed;
+  bottom: 6px;
+  left: 8px;
+  margin: 0;
+  font-size: 11px;
+  color: #94a3b8;
+  pointer-events: none;
+  z-index: 5;
+}
+
 /* Tighten the identity controls. */
 .auth-user .display-name,
 .auth-user .profile-picture { margin-top: 14px; max-width: none; }

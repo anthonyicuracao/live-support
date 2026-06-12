@@ -1529,6 +1529,7 @@ func main() {
 			"primaryColor":   primaryColor,
 			"faviconUrl":     faviconURL,
 			"vapidPublicKey": vapid.publicKey,
+			"version":        version,
 		})
 	})
 
@@ -1595,6 +1596,19 @@ func main() {
 		log.Fatal(err)
 	}
 	fileServer := http.FileServer(http.FS(staticRoot))
+	// serveHTML serves an embedded HTML page with the build version stamped in
+	// (replacing the __APP_VERSION__ placeholder), so the page can detect when
+	// it's a stale cached copy and offer a one-click refresh.
+	serveHTML := func(w http.ResponseWriter, name string) {
+		data, err := fs.ReadFile(staticRoot, name)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		out := strings.ReplaceAll(string(data), "__APP_VERSION__", version)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(out))
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Always revalidate the frontend (HTML/JS/CSS) so a deploy takes effect
 		// on the next load instead of being masked by a stale browser cache —
@@ -1615,18 +1629,14 @@ func main() {
 				http.Redirect(w, r, target, http.StatusSeeOther)
 				return
 			}
+			serveHTML(w, "auth.html")
+			return
 		}
 		// http.FileServer 301-redirects /index.html → /, so serve index.html
 		// content directly for both paths instead of redirecting (a redirect
 		// to /index.html would loop forever).
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-			data, err := fs.ReadFile(staticRoot, "index.html")
-			if err != nil {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Write(data)
+			serveHTML(w, "index.html")
 			return
 		}
 		fileServer.ServeHTTP(w, r)
