@@ -1213,6 +1213,12 @@ func (a *authApp) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/account/password", http.StatusSeeOther)
 		return
 	}
+	// Admins land on the Admin page (user management + console link); agents go
+	// straight to the agent console.
+	if user.Role == RoleAdmin {
+		http.Redirect(w, r, "/users", http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/auth.html", http.StatusSeeOther)
 }
 

@@ -3,7 +3,7 @@
 <header class="admin-head">
   <h1>Users — {{.Ref}}</h1>
   <nav class="admin-nav">
-    <a href="/auth.html">Dashboard</a><a href="/account/password">Change password</a>
+    <a href="/auth.html">Agent console</a><a href="/account/password">Change password</a>
     <form method="POST" action="/logout" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="btn ghost">Sign out</button>
     </form>

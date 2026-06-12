@@ -51,6 +51,18 @@
     .inline { display: inline; }
     .toolbar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
     .toolbar label { flex: 1 1 160px; font-weight: 600; }
+    /* Mobile / iframe-friendly: stack the header, let row actions wrap, and make
+       buttons comfortable to tap on a narrow screen. */
+    @media (max-width: 560px) {
+      main.container { padding: 24px 12px; }
+      .card { padding: 16px; }
+      .admin-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .admin-nav { flex-wrap: wrap; gap: 10px; }
+      th, td { padding: 6px; }
+      td .inline { display: block; }
+      td .btn { width: 100%; margin-bottom: 6px; }
+      .toolbar .btn.primary { width: 100%; }
+    }
   </style>
 </head>
 <body>
