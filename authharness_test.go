@@ -46,8 +46,8 @@ func newServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	if err != nil {
 		t.Fatalf("db pool: %v", err)
 	}
-	dbs = pool       // package global the handlers resolve tenants through
-	hub = newHub()   // ring fan-out broadcasts need a live (if empty) hub
+	dbs = pool     // package global the handlers resolve tenants through
+	hub = newHub() // ring fan-out broadcasts need a live (if empty) hub
 
 	a, err := newAuthApp()
 	if err != nil {
