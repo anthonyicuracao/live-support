@@ -917,6 +917,25 @@
       if (perm === "granted") {
         const st = await Push.enablePush(sessionId);
         renderPushStatus(st === "armed" ? "armed" : "blocked");
+        // Fire a visible test notification NOW, while the user is watching.
+        // Posting a real notification is what forces the browser's OS-level
+        // registration (macOS prompts for the app's notification permission on
+        // first post) — far better surfaced at setup time than during a missed
+        // call. It also gives the agent proof the whole chain works.
+        if (st === "armed") {
+          try {
+            const reg = await Push.registerServiceWorker();
+            if (reg) {
+              await reg.showNotification("Call alerts are on 🔔", {
+                body: "Incoming calls will appear like this when the console isn't in front. If you don't see this as a banner, check your system notification settings for this browser.",
+                icon: "/public/favicon.svg",
+                tag: "push-test",
+              });
+            }
+          } catch (e) {
+            /* the status line still reflects armed */
+          }
+        }
       } else {
         renderPushStatus(perm === "denied" ? "blocked" : "needs-enable");
       }
