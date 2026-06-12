@@ -12,6 +12,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -51,8 +52,10 @@ func printVAPIDKeys() error {
 	if err != nil {
 		return err
 	}
-	println("VAPID_PUBLIC_KEY=" + pub)
-	println("VAPID_PRIVATE_KEY=" + priv)
+	// fmt, not the println builtin — the builtin writes to stderr, which
+	// breaks `live-support -genvapid > keys.env` captures.
+	fmt.Println("VAPID_PUBLIC_KEY=" + pub)
+	fmt.Println("VAPID_PRIVATE_KEY=" + priv)
 	return nil
 }
 
