@@ -14,39 +14,57 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("push", (event) => {
   let data = {};
+  let parseFailed = false;
   try {
     data = event.data ? event.data.json() : {};
   } catch (e) {
-    /* ignore malformed payloads */
+    // Payload didn't decrypt/parse — still show SOMETHING below: a push the
+    // user never sees is a missed call, and Safari penalizes (and may revoke
+    // push for) sites whose push events display no notification.
+    parseFailed = true;
   }
-  if (data.type !== "incoming-call") return;
+  if (!parseFailed && data.type !== "incoming-call") return;
 
   const callType = data.callType === "video" ? "Video" : "Audio";
-  const body = `${callType} call from ${data.callerName || "Someone"}`;
+  const body = parseFailed
+    ? "Open the agent console to answer."
+    : `${callType} call from ${data.callerName || "Someone"}`;
 
   event.waitUntil(
     (async () => {
       // If a console tab is already focused, the page itself rings — don't
       // double-alert with an OS notification.
-      const clients = await self.clients.matchAll({
-        type: "window",
-        includeUncontrolled: true,
-      });
-      const focused = clients.some(
-        (c) => c.visibilityState === "visible" && c.focused
-      );
+      let focused = false;
+      try {
+        const clients = await self.clients.matchAll({
+          type: "window",
+          includeUncontrolled: true,
+        });
+        focused = clients.some(
+          (c) => c.visibilityState === "visible" && c.focused
+        );
+      } catch (e) {
+        /* if we can't tell, alert anyway */
+      }
       if (focused) return;
 
-      await self.registration.showNotification("Incoming call", {
-        body,
-        icon: "/public/favicon.svg",
-        badge: "/public/favicon.svg",
-        tag: "incoming-call",
-        renotify: true,
-        requireInteraction: true,
-        vibrate: [200, 100, 200, 100, 200],
-        data: { ref: data.ref, callId: data.callId },
-      });
+      // An exception here would silently eat the notification — the one
+      // failure mode this handler must never have. If the full option set is
+      // refused (engines differ on option support), retry minimal.
+      try {
+        await self.registration.showNotification("Incoming call", {
+          body,
+          icon: "/public/favicon.svg",
+          badge: "/public/favicon.svg",
+          tag: "incoming-call",
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [200, 100, 200, 100, 200],
+          data: { ref: data.ref, callId: data.callId },
+        });
+      } catch (e) {
+        await self.registration.showNotification("Incoming call", { body });
+      }
     })()
   );
 });
