@@ -1,0 +1,100 @@
+/* guest.css — modern caller modal. Scoped to the guest page only (.guest-user
+   and its sections) so the shared index.css + the agent (auth) page are
+   untouched. Loaded by index.html after index.css, so these rules win. */
+
+body.guest {
+  margin: 0;
+  min-height: 100vh;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, #334155, transparent),
+    radial-gradient(900px 500px at 100% 0%, #1d4ed8, transparent),
+    linear-gradient(160deg, #0f172a, #1e293b);
+}
+
+/* The guest <main> becomes the centered card; whichever section is visible
+   renders inside it. */
+.guest-user {
+  width: 400px;
+  max-width: 100%;
+  background: #fff;
+  border-radius: 20px;
+  padding: 26px 24px;
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.55);
+}
+
+/* Brand header (added in index.html). */
+.guest-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.guest-brand__logo {
+  width: 40px; height: 40px; border-radius: 12px; flex: none;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+}
+.guest-brand__logo svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.guest-brand__name { font-weight: 700; font-size: 16px; color: #0f172a; }
+.guest-brand__sub { color: #64748b; font-size: 13px; }
+
+/* Reset the big stacked margins from index.css inside the card. */
+.guest-user .greeting,
+.guest-user .call,
+.guest-user .call-incoming,
+.guest-user .call-outgoing,
+.guest-user .send-message,
+.guest-user .alert { margin-bottom: 0; }
+
+.guest-user h1 { font-size: 23px; line-height: 1.25; margin: 0 0 6px; color: #0f172a; font-weight: 700; }
+.guest-user .no-agents-message,
+.guest-user .greeting + .call .lede,
+.guest-user .send-message-reason { color: #64748b; font-size: 15px; margin: 0 0 18px; }
+.guest-lede { color: #64748b; font-size: 15px; margin: 0 0 20px; }
+
+/* Call buttons -> full-width pill buttons with icons. */
+.guest-user .call-buttons { display: flex; gap: 10px; margin: 0; }
+.guest-user .call-buttons .call-button { flex: 1; }
+.guest-user .call-buttons button,
+.guest-user .submit-button,
+.guest-user .cancel-button {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px 16px; border-radius: 14px;
+  font-size: 15px; font-weight: 600; border: none; cursor: pointer;
+  background: #f1f5f9; color: #0f172a;
+}
+.guest-user .call-buttons button:hover,
+.guest-user .submit-button:hover { text-decoration: none; }
+.guest-user .audio-call-button,
+.guest-user .accept-call-button,
+.guest-user .submit-button { background: #2563eb; color: #fff; }
+.guest-user .call-btn-icon { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Video button disabled when no video-capable agent is online. */
+.guest-user .video-call-button[disabled] { opacity: 0.45; cursor: not-allowed; }
+.guest-video-hint { display: none; color: #94a3b8; font-size: 12px; margin: 8px 0 0; text-align: center; }
+.guest-user.no-video .guest-video-hint { display: block; }
+
+.guest-foot { color: #94a3b8; font-size: 12px; text-align: center; margin-top: 18px; }
+
+/* Send-a-message form -> clean inputs (override index.css max-width + grey). */
+.guest-user .send-message-form { max-width: none; }
+.guest-user .send-message-form input {
+  background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+  padding: 12px; font-size: 15px; width: 100%;
+}
+.guest-user .send-message-form-buttons { display: flex; gap: 10px; margin-top: 4px; }
+
+/* Active call: break out of the card to a full-screen overlay. */
+.guest-user .call-active {
+  position: fixed; inset: 0; z-index: 1100; margin: 0;
+  background: #0f172a; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 16px;
+}
+.guest-user .call-active .end-call-button {
+  background: #dc2626; color: #fff; border-radius: 999px; padding: 12px 28px; font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  body.guest { padding: 0; }
+  .guest-user { border-radius: 0; min-height: 100vh; width: 100%; display: flex; flex-direction: column; justify-content: center; }
+}

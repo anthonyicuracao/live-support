@@ -145,10 +145,14 @@
     } else {
       if (noAgentsMsg) noAgentsMsg.style.display = "none";
       if (audioBtn) audioBtn.style.display = "";
-      if (videoBtn) videoBtn.style.display = anyHasCamera ? "" : "none";
+      // Keep Video visible but disabled when no video-capable agent is online;
+      // the .no-video class on the card reveals a short explanatory hint.
+      if (videoBtn) { videoBtn.style.display = ""; videoBtn.disabled = !anyHasCamera; }
       if (cancelBtn) cancelBtn.style.display = "";
       S.hideSection(".send-message");
     }
+    const guestCard = document.querySelector(".guest-user");
+    if (guestCard) guestCard.classList.toggle("no-video", anyAvailable && !anyHasCamera);
 
     // Auto-call (one-shot): only fires while ready, with a matching agent.
     if (autoCallType && state === "ready") {
