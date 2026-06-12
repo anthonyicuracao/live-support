@@ -293,22 +293,55 @@
   async function acquireMedia(wantVideo) {
     const result = { hasMic: false, hasCamera: false };
     if (liveStream) { liveStream.getTracks().forEach((t) => t.stop()); liveStream = null; }
-    const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
-    const video = wantVideo ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
-    try {
-      liveStream = await navigator.mediaDevices.getUserMedia({ audio, video });
-    } catch (e) {
-      if (wantVideo) {
-        try { liveStream = await navigator.mediaDevices.getUserMedia({ audio }); } catch (e2) { liveStream = null; }
-      } else {
+    // Try the saved device picks first, then fall back to defaults. A stale
+    // pick (device unplugged, or its id rotated by the browser) must never
+    // block going Available — and the picker UI already shows "Default" when
+    // the pick is missing, so a hard `exact` failure here would look like a
+    // toggle that inexplicably refuses to turn on.
+    const audioPick = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+    const videoPick = wantVideo ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
+    const attempts = [{ audio: audioPick, video: videoPick }];
+    if (selectedMicId || (wantVideo && selectedCamId)) {
+      attempts.push({ audio: true, video: wantVideo });
+    }
+    if (wantVideo) {
+      // Camera blocked/missing — stay answerable with audio only.
+      attempts.push({ audio: audioPick, video: false });
+      if (selectedMicId) attempts.push({ audio: true, video: false });
+    }
+    for (const c of attempts) {
+      try {
+        liveStream = await navigator.mediaDevices.getUserMedia(c);
+        break;
+      } catch (e) {
         liveStream = null;
       }
     }
     if (liveStream) {
       result.hasMic = liveStream.getAudioTracks().length > 0;
       result.hasCamera = liveStream.getVideoTracks().length > 0;
+      dropStalePicks();
     }
     return result;
+  }
+
+  // If acquisition landed on a different device than the saved pick, the pick
+  // is stale — forget it so the pickers, localStorage, and future acquisitions
+  // agree instead of silently disagreeing forever.
+  function dropStalePicks() {
+    if (!liveStream) return;
+    const a = liveStream.getAudioTracks()[0];
+    if (selectedMicId && a && a.getSettings().deviceId !== selectedMicId) {
+      selectedMicId = "";
+      try { localStorage.removeItem(STORAGE_MIC); } catch (e) {}
+      populateDevices();
+    }
+    const v = liveStream.getVideoTracks()[0];
+    if (selectedCamId && v && v.getSettings().deviceId !== selectedCamId) {
+      selectedCamId = "";
+      try { localStorage.removeItem(STORAGE_CAM); } catch (e) {}
+      populateDevices();
+    }
   }
 
   // ─── Display name (public alias shown to guests) ───────────────────────
@@ -1230,16 +1263,14 @@
     if (liveStream && (callType !== "video" || liveStream.getVideoTracks().length > 0)) {
       return liveStream;
     }
-    try {
-      const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
-      const video = callType === "video" && perms.hasCamera
-        ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
-      return await navigator.mediaDevices.getUserMedia({ audio, video });
-    } catch (e) {
-      console.error("[Media] getUserMedia error:", e.message);
+    // Re-acquire through the same fallback ladder as Go-Available, so a stale
+    // device pick can't kill an incoming call either.
+    const got = await acquireMedia(callType === "video" && perms.hasCamera);
+    if (!got.hasMic) {
       showAlert("Could not access media devices.");
       return null;
     }
+    return liveStream;
   }
 
   // ─── Show active call UI ───────────────────────────────────────────────

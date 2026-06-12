@@ -601,15 +601,29 @@
 
   // ─── Get media stream ──────────────────────────────────────────────────
   async function getMediaStream(callType) {
-    try {
-      const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
-      const video = callType === "video" && perms.hasCamera
-        ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
-      return await navigator.mediaDevices.getUserMedia({ audio, video });
-    } catch (e) {
-      console.error("[Media] getUserMedia error:", e.message);
-      return null;
+    // Try the saved device picks first, then fall back to defaults — a stale
+    // pick (device unplugged, or its id rotated by the browser) must never
+    // kill the call.
+    const audioPick = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+    const wantVideo = callType === "video" && perms.hasCamera;
+    const videoPick = wantVideo ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
+    const attempts = [{ audio: audioPick, video: videoPick }];
+    if (selectedMicId || (wantVideo && selectedCamId)) {
+      attempts.push({ audio: true, video: wantVideo });
     }
+    if (wantVideo) {
+      attempts.push({ audio: audioPick, video: false });
+      if (selectedMicId) attempts.push({ audio: true, video: false });
+    }
+    for (const c of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(c);
+      } catch (e) {
+        /* try the next, less specific constraint set */
+      }
+    }
+    console.error("[Media] getUserMedia failed for every constraint set");
+    return null;
   }
 
   // ─── Show active call UI ───────────────────────────────────────────────

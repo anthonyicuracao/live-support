@@ -280,6 +280,8 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subs := subsForSession(db, body.Ref, body.ToSession)
+	log.Printf("[Ring] ref=%s to=%s… call=%s… subs=%d",
+		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), len(subs))
 	if len(subs) == 0 {
 		// No push subscription for this agent — instant inbox relay handles it.
 		writeJSON(w, 200, map[string]any{"pushed": 0})
