@@ -85,6 +85,27 @@
       if (!reg) return "error";
       await navigator.serviceWorker.ready;
       let sub = await reg.pushManager.getSubscription();
+      // Self-heal a server-side VAPID key rotation: a subscription created
+      // under the old key can never be pushed with the new one (the push
+      // service rejects the JWT), so detect the mismatch, drop the dead
+      // subscription on both ends, and subscribe fresh.
+      if (sub && sub.options && sub.options.applicationServerKey) {
+        const cur = new Uint8Array(sub.options.applicationServerKey);
+        const want = urlB64ToUint8Array(vapidKey);
+        const same =
+          cur.length === want.length && cur.every((b, i) => b === want[i]);
+        if (!same) {
+          const old = sub.toJSON();
+          try { await sub.unsubscribe(); } catch (e) {}
+          fetch("/api/push/unsubscribe", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ endpoint: old.endpoint }),
+          }).catch(() => {});
+          sub = null;
+          console.info("[Push] VAPID key changed — resubscribed with the new key");
+        }
+      }
       if (!sub) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,

@@ -51,6 +51,13 @@ window.configReady = (async function () {
   const channels = new Map(); // name -> Channel
   let openWaiters = [];
 
+  // Broadcasts that happen while the socket is down (tab frozen by Safari,
+  // network blip, laptop sleep) are simply lost — reconnect re-subscribes the
+  // channels but can't replay missed events. Pages register a reconnect hook
+  // to refetch whatever those events would have told them about.
+  let everOpened = false;
+  const reconnectListeners = [];
+
   function connect() {
     ws = new WebSocket(wsUrl);
 
@@ -65,6 +72,12 @@ window.configReady = (async function () {
           rawSend({ action: "track", channel: ch.name, key: ch._presenceKey, state: ch._trackedState });
         }
       }
+      if (everOpened) {
+        reconnectListeners.forEach((fn) => {
+          try { fn(); } catch (e) { /* listener errors must not break the socket */ }
+        });
+      }
+      everOpened = true;
     };
 
     ws.onmessage = (ev) => {
@@ -206,6 +219,11 @@ window.configReady = (async function () {
     // broadcasts to current subscribers regardless of sender subscription.
     async publish(channelName, event, payload) {
       return send({ action: "broadcast", channel: channelName, event, payload });
+    },
+    // Run fn after every RE-connect (not the initial open) — use it to refetch
+    // state whose change events were lost while the socket was down.
+    onReconnect(fn) {
+      reconnectListeners.push(fn);
     },
   };
 

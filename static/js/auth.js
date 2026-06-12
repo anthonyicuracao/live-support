@@ -1577,6 +1577,19 @@
         if (fn) fn();
       })
       .subscribe();
+    // Refresh broadcasts that fired while the socket was down (frozen tab,
+    // sleep, network blip) are lost — refetch everything on reconnect and
+    // when the tab becomes visible again, so the logs can't go stale.
+    const reloadAll = debounce(() => {
+      loadCallsLog(ref, callsPage);
+      loadMessagesLog(ref, messagesPage);
+      loadSessionsLog(ref, sessionsPage);
+      loadAdminSessionsLog(ref, adminSessionsPage);
+    }, 300);
+    if (window.Realtime.onReconnect) window.Realtime.onReconnect(reloadAll);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) reloadAll();
+    });
   }
 
   async function loadCallsLog(ref, page = 0) {
