@@ -84,10 +84,30 @@ body {
 .auth-user .display-name,
 .auth-user .profile-picture { margin-top: 14px; max-width: none; }
 
-/* History tables: let them scroll horizontally instead of overflowing the card. */
+/* History tables: on narrow viewports (mobile / embedded widget) scroll
+   horizontally inside the card rather than overflowing it. On desktop the
+   media query below removes the scroll once there's room. */
 .auth-user .logs .log-calls,
 .auth-user .logs .log-messages,
-.auth-user .logs .log-sessions { overflow-x: auto; }
+.auth-user .logs .log-sessions,
+.auth-user .logs .log-admin-sessions { overflow-x: auto; }
+
+/* Desktop: give the console room so the History tables are visible at a glance
+   without horizontal scroll. The hub (greeting + online) stays a tidy centered
+   column for the modal feel; only History spreads to the full width. */
+@media (min-width: 980px) {
+  .auth-user { max-width: 1100px; }
+  .auth-user > .greeting,
+  .auth-user > .call {
+    max-width: 620px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .auth-user .logs .log-calls,
+  .auth-user .logs .log-messages,
+  .auth-user .logs .log-sessions,
+  .auth-user .logs .log-admin-sessions { overflow-x: visible; }
+}
 
 @media (max-width: 560px) {
   .auth-user { padding: 16px 10px 96px; }
