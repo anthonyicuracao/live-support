@@ -223,7 +223,11 @@ func sendWebPush(db *sql.DB, s pushSub, payload []byte) {
 		body := make([]byte, 256)
 		n, _ := resp.Body.Read(body)
 		log.Printf("[Push] rejected %d by %s…: %s", resp.StatusCode, safePrefix(s.endpoint, 40), string(body[:n]))
+		return
 	}
+	// Log accepted sends too — "which endpoint did we actually push, and what
+	// did the service answer?" is the question every silent-delivery hunt asks.
+	log.Printf("[Push] accepted %d by %s…", resp.StatusCode, safePrefix(s.endpoint, 60))
 }
 
 // ───────────────────────── HTTP handlers ───────────────────────────────────
@@ -262,6 +266,8 @@ func pushSubscribeHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 500, "store failed")
 		return
 	}
+	log.Printf("[Push] subscribed user=%d session=%s… endpoint=%s…",
+		info.user.ID, safePrefix(body.SessionID, 8), safePrefix(body.Subscription.Endpoint, 60))
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
