@@ -109,6 +109,14 @@
             <select id="cam-select"><option value="">Default</option></select>
           </label>
         </div>
+        <!-- Web Push status: shows whether background call alerts are armed, with
+             an explicit Enable action (its own gesture, required by Safari). -->
+        <div class="push-status" id="push-status" style="display: none">
+          <span class="push-status__text" id="push-status-text"></span>
+          <button type="button" class="push-status__btn" id="push-enable-btn" style="display: none">
+            Enable notifications
+          </button>
+        </div>
         <!-- Public display name shown to guests during calls and chat.
              Disabled until auth.js wires up the input. -->
         <div class="display-name">

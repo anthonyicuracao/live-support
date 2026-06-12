@@ -1,12 +1,20 @@
-// js/push.js — Web Push client (Phase 2). Exposes window.Push:
-//   registerServiceWorker()        → ensure /sw.js is registered (for notifications)
-//   enablePush(sessionId)          → permission + subscribe + POST /api/push/subscribe
-//   disablePush()                  → POST /api/push/unsubscribe (stop server-side push)
+// js/push.js — Web Push client. Exposes window.Push:
+//   supported()              → is push usable in this browser at all
+//   permission()             → "granted" | "denied" | "default" | "unsupported"
+//   requestPermission()      → MUST be called from a user gesture (Safari);
+//                              returns the resulting permission
+//   enablePush(sessionId)    → subscribe + POST /api/push/subscribe (permission
+//                              must already be granted). Returns a status string:
+//                              "armed" | "blocked" | "unavailable" | "unsupported" | "error"
+//   disablePush()            → POST /api/push/unsubscribe (stop server-side push)
+//   registerServiceWorker()  → ensure /sw.js is registered
 //
-// Self-contained: it fetches the VAPID public key from /api/connect-config, so
-// callers just pass their presence sessionId. Everything degrades gracefully —
-// if the browser lacks push, the key is unset, or permission is denied, the
-// functions return false and the app falls back to the inbox-over-WS path.
+// Safari notes that shape this design:
+//  - Notification.requestPermission() only prompts from a *direct* user gesture,
+//    and the gesture is consumed by the first permission request — so we never
+//    bundle it with getUserMedia. The console exposes a dedicated "Enable" action.
+//  - The VAPID key is pre-fetched at load so subscribe() never sits behind an
+//    await that would drop the gesture context.
 (function () {
   function urlB64ToUint8Array(base64String) {
     const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -17,8 +25,25 @@
     return out;
   }
 
-  let registration = null;
+  const supported =
+    "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 
+  // Pre-fetch the VAPID public key at load (not behind the gesture).
+  let vapidKey = "";
+  const vapidReady = (async () => {
+    try {
+      const r = await fetch("/api/connect-config");
+      if (r.ok) {
+        const cfg = await r.json();
+        vapidKey = (cfg && cfg.vapidPublicKey) || "";
+      }
+    } catch (e) {
+      /* leave empty */
+    }
+    return vapidKey;
+  })();
+
+  let registration = null;
   async function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return null;
     if (registration) return registration;
@@ -31,38 +56,39 @@
     }
   }
 
-  async function fetchVapidKey() {
-    try {
-      const r = await fetch("/api/connect-config");
-      if (!r.ok) return "";
-      const cfg = await r.json();
-      return (cfg && cfg.vapidPublicKey) || "";
-    } catch (e) {
-      return "";
-    }
+  function permission() {
+    if (!("Notification" in window)) return "unsupported";
+    return Notification.permission; // granted | denied | default
   }
 
-  async function enablePush(sessionId) {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
-      return false;
-    }
-    const vapidPublicKey = await fetchVapidKey();
-    if (!vapidPublicKey) return false; // push not configured on the server
-
+  // Call from a user gesture (e.g. an "Enable" button click) so Safari prompts.
+  async function requestPermission() {
+    if (!("Notification" in window)) return "unsupported";
     if (Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch (e) {}
+      try {
+        return await Notification.requestPermission();
+      } catch (e) {
+        return Notification.permission;
+      }
     }
-    if (Notification.permission !== "granted") return false;
+    return Notification.permission;
+  }
 
+  // Subscribe and register with the server. Permission must already be granted.
+  async function enablePush(sessionId) {
+    if (!supported) return "unsupported";
+    await vapidReady;
+    if (!vapidKey) return "unavailable"; // server has no VAPID configured
+    if (Notification.permission !== "granted") return "blocked";
     try {
       const reg = await registerServiceWorker();
-      if (!reg) return false;
+      if (!reg) return "error";
       await navigator.serviceWorker.ready;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlB64ToUint8Array(vapidPublicKey),
+          applicationServerKey: urlB64ToUint8Array(vapidKey),
         });
       }
       const json = sub.toJSON(); // { endpoint, keys: { p256dh, auth } }
@@ -74,10 +100,10 @@
           subscription: { endpoint: json.endpoint, keys: json.keys },
         }),
       });
-      return resp.ok;
+      return resp.ok ? "armed" : "error";
     } catch (e) {
       console.warn("[Push] enable failed:", e.message);
-      return false;
+      return "error";
     }
   }
 
@@ -100,5 +126,12 @@
     }
   }
 
-  window.Push = { registerServiceWorker, enablePush, disablePush };
+  window.Push = {
+    supported: () => supported,
+    permission,
+    requestPermission,
+    enablePush,
+    disablePush,
+    registerServiceWorker,
+  };
 })();

@@ -246,14 +246,12 @@
   // the /api/online endpoint, so no one can call them.
   const STORAGE_AVAILABLE = "auth-user-available";
   function loadAvailability() {
-    try {
-      const v = localStorage.getItem(STORAGE_AVAILABLE);
-      // Default to PAUSED on first load — the agent explicitly goes Available,
-      // which is the moment camera/mic permission is requested.
-      return v === null ? false : v === "true";
-    } catch (e) {
-      return false; // localStorage unavailable (private mode, etc.)
-    }
+    // ALWAYS start Paused on a fresh page load. Being Available requires a live
+    // microphone (and camera) stream that only a user gesture — the Available
+    // click — can create; we can't re-acquire it automatically on load. So we
+    // never restore a stale "available" from a previous session, which would
+    // otherwise show the agent as Available (and callable) with no live stream.
+    return false;
   }
   function saveAvailability(on) {
     try {
@@ -501,10 +499,10 @@
       const goingAvailable = availabilityInput.checked;
       if (goingAvailable) {
         // This is a user gesture — unlock audio so the ring can sound when a call
-        // later arrives asynchronously, and ask for notification permission so a
-        // backgrounded tab can still alert on an incoming call.
+        // later arrives asynchronously. (Notification permission is handled
+        // separately via the Enable action, so it never collides with the
+        // getUserMedia prompt below — Safari only allows one per gesture.)
         S.primeRingtone();
-        S.requestNotifyPermission();
         // Request permission NOW, for only the picked modes (mic always, camera
         // only if Video is on). No mic -> can't go Available.
         const got = await acquireMedia(wantsVideo);
@@ -520,9 +518,6 @@
         // Permission just granted — re-enumerate (with retry) so the pickers
         // show real device names.
         populateDevicesSoon();
-        // Subscribe to Web Push so calls reach us even when the tab is hidden
-        // or closed (best-effort; degrades to the inbox path where unsupported).
-        if (window.Push) Push.enablePush(sessionId);
       } else if (liveStream) {
         // Going Paused: release the camera/mic so the device indicator clears,
         // and stop server-side push (we're not taking calls).
@@ -533,6 +528,9 @@
       isAvailable = goingAvailable;
       saveAvailability(isAvailable);
       renderAvailabilityUI();
+      // Arm Web Push (if permission already granted) and show the status line,
+      // or hide it when pausing.
+      syncPushStatus();
       const status = availabilityStatus();
       presenceData.status = status;
       // presenceChannel is initialized later in the IIFE; guard against
@@ -734,6 +732,7 @@
   let localStream = null;
   let callStartTime = null;
   let callTimeoutTimer = null;
+  let incomingTimeoutTimer = null; // safety net to clear a stale/unanswered ring
   let iceCandidateBuffer = [];
   let waitTimeInterval = null;
   let presenceChannel = null;
@@ -765,6 +764,68 @@
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) checkPendingInvites();
   });
+
+  // ─── Push status indicator ─────────────────────────────────────────────
+  // Make the otherwise-invisible push state visible: are background call alerts
+  // armed, off (with an Enable action), or blocked by the browser? The Enable
+  // button gives notification permission its own user gesture — required by
+  // Safari, which won't prompt if the request is bundled with getUserMedia.
+  const pushStatusEl = document.getElementById("push-status");
+  const pushStatusTextEl = document.getElementById("push-status-text");
+  const pushEnableBtn = document.getElementById("push-enable-btn");
+  function renderPushStatus(state) {
+    if (!pushStatusEl) return;
+    if (state === "hidden") {
+      pushStatusEl.style.display = "none";
+      return;
+    }
+    pushStatusEl.style.display = "";
+    pushStatusEl.className = "push-status";
+    pushEnableBtn.style.display = "none";
+    if (state === "armed") {
+      pushStatusEl.classList.add("is-on");
+      pushStatusTextEl.textContent = "🔔 Background call alerts are on.";
+    } else if (state === "blocked") {
+      pushStatusEl.classList.add("is-blocked");
+      pushStatusTextEl.textContent =
+        "🔕 Notifications are blocked — allow them for this site in your browser settings to be alerted to calls when this tab isn’t in front.";
+    } else {
+      // needs-enable
+      pushStatusEl.classList.add("is-off");
+      pushStatusTextEl.textContent = "Get alerted to calls when this tab isn’t in front:";
+      pushEnableBtn.style.display = "";
+    }
+  }
+  // Reflect the current push state; arms push silently if permission is already
+  // granted. Hidden unless we're Available (push only matters when taking calls).
+  async function syncPushStatus() {
+    if (!window.Push || !Push.supported() || !isAvailable) {
+      renderPushStatus("hidden");
+      return;
+    }
+    const perm = Push.permission();
+    if (perm === "denied") {
+      renderPushStatus("blocked");
+      return;
+    }
+    if (perm !== "granted") {
+      renderPushStatus("needs-enable");
+      return;
+    }
+    const st = await Push.enablePush(sessionId);
+    renderPushStatus(st === "armed" ? "armed" : st === "blocked" ? "blocked" : "hidden");
+  }
+  if (pushEnableBtn) {
+    pushEnableBtn.addEventListener("click", async () => {
+      const perm = await Push.requestPermission(); // this click is the gesture
+      if (perm === "granted") {
+        const st = await Push.enablePush(sessionId);
+        renderPushStatus(st === "armed" ? "armed" : "blocked");
+      } else {
+        renderPushStatus(perm === "denied" ? "blocked" : "needs-enable");
+      }
+    });
+  }
 
   // ─── Cleanup on page unload ────────────────────────────────────────────
   window.addEventListener("beforeunload", () => {
@@ -951,12 +1012,27 @@
     S.hideSection(".call");
     S.hideSection(".logs");
     S.showSection(".call-incoming");
+
+    // Safety net: if the call isn't answered within the ring window — because the
+    // guest already gave up, or this was a stale invite re-hydrated on reopen —
+    // stop ringing and return to ready so the console can never get stuck on a
+    // dead incoming call (which would also block the availability toggle).
+    clearTimeout(incomingTimeoutTimer);
+    incomingTimeoutTimer = setTimeout(() => {
+      if (state === "incoming") {
+        showAlert(`Missed call from ${data.callerName || "a guest"}.`);
+        resetToReady();
+      }
+    }, 35000);
   }
 
   // After a push notification wakes/focuses the console, re-hydrate any call
   // that's still ringing for this agent (the guest waits ~30s).
   async function checkPendingInvites() {
-    if (state !== "ready") return;
+    // Only re-hydrate a ringing call when we're actually Available this session
+    // (a live mic stream exists). On a fresh reopen the agent is Paused, so we
+    // must not auto-ring a leftover invite — they re-go-Available first.
+    if (state !== "ready" || !isAvailable) return;
     try {
       const r = await fetch("/api/call/pending");
       if (!r.ok) return;
@@ -970,6 +1046,7 @@
   // ─── Accept incoming call ──────────────────────────────────────────────
   document.querySelector(".accept-call-button").addEventListener("click", async () => {
     if (state !== "incoming") return;
+    clearTimeout(incomingTimeoutTimer);
     S.stopRingtone();
     S.clearIncomingNotification();
     S.hideSection(".call-incoming");
@@ -1236,6 +1313,7 @@
 
   // ─── Reset to ready state ──────────────────────────────────────────────
   async function resetToReady() {
+    clearTimeout(incomingTimeoutTimer);
     S.stopRingtone();
     S.clearIncomingNotification();
     state = "ready";

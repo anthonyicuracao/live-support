@@ -80,6 +80,35 @@ body {
   .auth-user .device-pickers { grid-template-columns: 1fr; }
 }
 
+/* Web Push status line — visible signal of whether background call alerts are
+   armed, off (with an Enable action), or blocked by the browser. */
+.auth-user .push-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+.auth-user .push-status.is-on { background: #ecfdf5; border: 1px solid #d1fae5; color: #065f46; }
+.auth-user .push-status.is-off { background: #f8fafc; border: 1px solid #eceff2; color: #475569; }
+.auth-user .push-status.is-blocked { background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; }
+.auth-user .push-status__text { flex: 1; min-width: 55%; }
+.auth-user .push-status__btn {
+  background: var(--primary, #7c3aed);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.auth-user .push-status__btn:hover { filter: brightness(0.95); }
+
 /* Tighten the identity controls. */
 .auth-user .display-name,
 .auth-user .profile-picture { margin-top: 14px; max-width: none; }
