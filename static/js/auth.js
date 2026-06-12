@@ -277,24 +277,38 @@
   function saveVideoPref(on) { try { localStorage.setItem(STORAGE_VIDEO, String(on)); } catch (e) {} }
   let wantsVideo = loadVideoPref();
 
-  // Request mic (+ camera if wantVideo) right now; return what was granted and
-  // release the probe tracks (the actual call re-acquires). Falls back to
-  // audio-only if video was requested but blocked.
+  // The live stream the agent holds while Available, acquired here with the
+  // selected devices and REUSED by the call (so accepting doesn't re-prompt).
+  // The picked mic/camera are persisted per-browser so the choice sticks
+  // (deviceIds are stable per browser once a permission has been granted).
+  const STORAGE_MIC = "auth-user-mic";
+  const STORAGE_CAM = "auth-user-cam";
+  let liveStream = null;
+  let selectedMicId = "";
+  let selectedCamId = "";
+  try { selectedMicId = localStorage.getItem(STORAGE_MIC) || ""; } catch (e) {}
+  try { selectedCamId = localStorage.getItem(STORAGE_CAM) || ""; } catch (e) {}
+
+  // Acquire mic (+ camera if wantVideo) using the chosen devices and keep it as
+  // liveStream. Returns what was granted; falls back to audio-only if video is
+  // blocked. Releases any previous live stream first (e.g. on device change).
   async function acquireMedia(wantVideo) {
     const result = { hasMic: false, hasCamera: false };
+    if (liveStream) { liveStream.getTracks().forEach((t) => t.stop()); liveStream = null; }
+    const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+    const video = wantVideo ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: !!wantVideo });
-      result.hasMic = stream.getAudioTracks().length > 0;
-      result.hasCamera = stream.getVideoTracks().length > 0;
-      stream.getTracks().forEach((t) => t.stop());
+      liveStream = await navigator.mediaDevices.getUserMedia({ audio, video });
     } catch (e) {
       if (wantVideo) {
-        try {
-          const s2 = await navigator.mediaDevices.getUserMedia({ audio: true });
-          result.hasMic = s2.getAudioTracks().length > 0;
-          s2.getTracks().forEach((t) => t.stop());
-        } catch (e2) { /* no mic either */ }
+        try { liveStream = await navigator.mediaDevices.getUserMedia({ audio }); } catch (e2) { liveStream = null; }
+      } else {
+        liveStream = null;
       }
+    }
+    if (liveStream) {
+      result.hasMic = liveStream.getAudioTracks().length > 0;
+      result.hasCamera = liveStream.getVideoTracks().length > 0;
     }
     return result;
   }
@@ -397,6 +411,62 @@
     });
   }
 
+  // ─── Device pickers (mic / camera), like Zoom/Meet ─────────────────────
+  // Device labels are only exposed by enumerateDevices() AFTER a media
+  // permission has been granted, so we populate once on load (ids, maybe no
+  // labels) and again after Go-Available (with labels). Changing a device
+  // while Available re-acquires the live stream on the new device.
+  const micSelect = document.getElementById("mic-select");
+  const camSelect = document.getElementById("cam-select");
+  function fillDeviceSelect(sel, devices, currentId, label) {
+    if (!sel) return;
+    sel.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = ""; def.textContent = `Default ${label.toLowerCase()}`;
+    sel.appendChild(def);
+    devices.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || `${label} ${i + 1}`;
+      sel.appendChild(o);
+    });
+    // Keep the persisted choice selected if it's still present.
+    sel.value = devices.some((d) => d.deviceId === currentId) ? currentId : "";
+  }
+  async function populateDevices() {
+    if (!micSelect && !camSelect) return;
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return; }
+    fillDeviceSelect(micSelect, devices.filter((d) => d.kind === "audioinput"), selectedMicId, "Microphone");
+    fillDeviceSelect(camSelect, devices.filter((d) => d.kind === "videoinput"), selectedCamId, "Camera");
+  }
+  if (micSelect) {
+    micSelect.addEventListener("change", async () => {
+      selectedMicId = micSelect.value;
+      try { localStorage.setItem(STORAGE_MIC, selectedMicId); } catch (e) {}
+      // Re-acquire on the new mic if we're holding a live stream.
+      if (isAvailable) {
+        const got = await acquireMedia(wantsVideo);
+        if (got.hasMic) { perms = got; await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic); }
+      }
+    });
+  }
+  if (camSelect) {
+    camSelect.addEventListener("change", async () => {
+      selectedCamId = camSelect.value;
+      try { localStorage.setItem(STORAGE_CAM, selectedCamId); } catch (e) {}
+      if (isAvailable && wantsVideo) {
+        const got = await acquireMedia(wantsVideo);
+        if (got.hasMic) { perms = got; await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic); }
+      }
+    });
+  }
+  populateDevices();
+  // Refresh the list (and labels) if devices are plugged/unplugged.
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", populateDevices);
+  }
+
   if (availabilityInput) {
     // Enable the input now that we're about to attach the change handler;
     // it ships disabled in HTML so an early click can't desync the UI.
@@ -410,6 +480,9 @@
       }
       const goingAvailable = availabilityInput.checked;
       if (goingAvailable) {
+        // This is a user gesture — unlock audio so the ring can sound when a call
+        // later arrives asynchronously.
+        S.primeRingtone();
         // Request permission NOW, for only the picked modes (mic always, camera
         // only if Video is on). No mic -> can't go Available.
         const got = await acquireMedia(wantsVideo);
@@ -422,6 +495,12 @@
         presenceData.has_camera = perms.hasCamera;
         presenceData.has_mic = perms.hasMic;
         await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic);
+        // Permission just granted — re-enumerate so the pickers show real labels.
+        populateDevices();
+      } else if (liveStream) {
+        // Going Paused: release the camera/mic so the device indicator clears.
+        liveStream.getTracks().forEach((t) => t.stop());
+        liveStream = null;
       }
       isAvailable = goingAvailable;
       saveAvailability(isAvailable);
@@ -940,7 +1019,7 @@
       },
     });
 
-    localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+    (callType === "video" ? localStream.getTracks() : localStream.getAudioTracks()).forEach((track) => peerConnection.addTrack(track, localStream));
 
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
@@ -972,7 +1051,7 @@
       },
     });
 
-    localStream.getTracks().forEach((track) => peerConnection.addTrack(track, localStream));
+    (callType === "video" ? localStream.getTracks() : localStream.getAudioTracks()).forEach((track) => peerConnection.addTrack(track, localStream));
 
     await peerConnection.setRemoteDescription({ type: "offer", sdp: sdpString });
     await flushIceCandidateBuffer();
@@ -999,11 +1078,19 @@
 
   // ─── Get media stream ──────────────────────────────────────────────────
   async function getMediaStream(callType) {
+    // Reuse the stream acquired at Go-Available so accepting a call doesn't
+    // re-prompt. The addTrack step picks audio-only vs audio+video, so an audio
+    // call from a video-capable agent still sends audio only. Only a video call
+    // arriving while we hold an audio-only stream needs a fresh acquire (which
+    // routing normally prevents, since video calls target camera agents).
+    if (liveStream && (callType !== "video" || liveStream.getVideoTracks().length > 0)) {
+      return liveStream;
+    }
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: callType === "video" && perms.hasCamera,
-      });
+      const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+      const video = callType === "video" && perms.hasCamera
+        ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
+      return await navigator.mediaDevices.getUserMedia({ audio, video });
     } catch (e) {
       console.error("[Media] getUserMedia error:", e.message);
       showAlert("Could not access media devices.");
@@ -1055,10 +1142,12 @@
       peerConnection.close();
       peerConnection = null;
     }
-    if (localStream) {
+    // Don't stop the live (Available) stream — it's reused across calls. Only
+    // stop a one-off stream (e.g. a fresh acquire for a video call).
+    if (localStream && localStream !== liveStream) {
       localStream.getTracks().forEach((t) => t.stop());
-      localStream = null;
     }
+    localStream = null;
 
     const remoteVideo = document.querySelector(".call-active .remote-video");
     if (remoteVideo) remoteVideo.srcObject = null;

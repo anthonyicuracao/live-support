@@ -382,18 +382,36 @@ window.Shared = (() => {
   // ─── Ringtone ─────────────────────────────────────────────────────────────
   let ringtoneAudio = null;
 
+  function ensureRingtone() {
+    if (!ringtoneAudio) {
+      ringtoneAudio = new Audio("/public/ring.mp3");
+      ringtoneAudio.loop = true;
+    }
+    return ringtoneAudio;
+  }
+
+  // Browsers block audio that isn't started from a user gesture. Call this from a
+  // click (e.g. Go-Available) to UNLOCK playback — a muted play/pause — so the
+  // ring can sound when a call later arrives asynchronously.
+  function primeRingtone() {
+    const a = ensureRingtone();
+    a.muted = true;
+    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; })
+            .catch(() => { a.muted = false; });
+  }
+
   function playRingtone() {
-    if (ringtoneAudio) return;
-    ringtoneAudio = new Audio("/public/ring.mp3");
-    ringtoneAudio.loop = true;
-    ringtoneAudio.play().catch((e) => console.warn("[Ringtone] Play failed:", e.message));
+    const a = ensureRingtone();
+    a.muted = false;
+    a.currentTime = 0;
+    a.play().catch((e) => console.warn("[Ringtone] Play failed:", e.message));
   }
 
   function stopRingtone() {
     if (!ringtoneAudio) return;
     ringtoneAudio.pause();
     ringtoneAudio.currentTime = 0;
-    ringtoneAudio = null;
+    // Keep the element so it stays primed for the next call.
   }
 
   // ─── Time Formatting ──────────────────────────────────────────────────────
@@ -453,6 +471,7 @@ window.Shared = (() => {
     updateCallRecord,
     createMessage,
     notifyDashboardRefresh,
+    primeRingtone,
     playRingtone,
     stopRingtone,
     formatWaitTime,

@@ -98,6 +98,16 @@
             <span class="video-mode__hint">— camera is requested only when you go Available</span>
           </span>
         </label>
+        <!-- Device pickers (like Zoom/Meet). Labels appear after permission is
+             granted; changing while Available re-acquires the stream. -->
+        <div class="device-pickers">
+          <label class="device-pick">Microphone
+            <select id="mic-select"><option value="">Default</option></select>
+          </label>
+          <label class="device-pick">Camera
+            <select id="cam-select"><option value="">Default</option></select>
+          </label>
+        </div>
         <!-- Public display name shown to guests during calls and chat.
              Disabled until auth.js wires up the input. -->
         <div class="display-name">

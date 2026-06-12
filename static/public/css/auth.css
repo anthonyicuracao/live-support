@@ -51,6 +51,35 @@ body {
   max-width: none;
 }
 
+/* Device pickers (mic/camera) — two soft dropdown rows under the video toggle. */
+.auth-user .device-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+.auth-user .device-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #4a5568;
+}
+.auth-user .device-pick select {
+  font: inherit;
+  font-weight: 400;
+  color: #1a202c;
+  padding: 8px 10px;
+  border: 1px solid #d7dbe0;
+  border-radius: 8px;
+  background: #fff;
+  max-width: 100%;
+}
+@media (max-width: 560px) {
+  .auth-user .device-pickers { grid-template-columns: 1fr; }
+}
+
 /* Tighten the identity controls. */
 .auth-user .display-name,
 .auth-user .profile-picture { margin-top: 14px; max-width: none; }
