@@ -206,6 +206,17 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_push_session ON push_subscriptions(ref, session_id);
 CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(ref, user_id);
 CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
+CREATE TABLE IF NOT EXISTS agent_availability (
+  user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  ref          TEXT    NOT NULL,
+  available    INTEGER NOT NULL DEFAULT 0,
+  session_id   TEXT    NOT NULL DEFAULT '',
+  display_name TEXT    NOT NULL DEFAULT '',
+  has_camera   INTEGER NOT NULL DEFAULT 0,
+  picture      TEXT    NOT NULL DEFAULT '',
+  online_since TEXT    NOT NULL DEFAULT '',
+  updated_at   TEXT    NOT NULL DEFAULT ''
+);
 `
 
 func openDB(path string) (*sql.DB, error) {
@@ -1585,6 +1596,10 @@ func main() {
 	// Phase 2 Web Push routes (subscribe/unsubscribe, call ring + pending). The
 	// authed routes reuse the auth middleware to resolve tenant + user.
 	mountPush(mux, auth)
+
+	// Phase 3 durable availability ("Available until Pause or log out"): the
+	// toggle's server-side truth + closed-tab agent discovery for guests.
+	mountAvailability(mux, auth)
 
 	// Serve the PWA manifest with the correct type (Go's MIME table has no
 	// .webmanifest entry, so it would otherwise fall back to text/plain).

@@ -95,20 +95,49 @@ func TestCallRingFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Guest rings the agent's session.
-	body := `{"ref":"` + testRef + `","toSession":"agent-sess","callId":"call-X","callType":"audio","callerName":"Guest Q"}`
-	req := httptest.NewRequest("POST", "/api/call/ring", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	callRingHandler(w, req)
-	if w.Code != 200 {
-		t.Fatalf("ring: want 200, got %d: %s", w.Code, w.Body.String())
+	ring := func() int {
+		body := `{"ref":"` + testRef + `","toSession":"agent-sess","callId":"call-X","callType":"audio","callerName":"Guest Q"}`
+		req := httptest.NewRequest("POST", "/api/call/ring", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		callRingHandler(w, req)
+		if w.Code != 200 {
+			t.Fatalf("ring: want 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var ringResp struct {
+			Pushed int `json:"pushed"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &ringResp)
+		return ringResp.Pushed
 	}
-	var ringResp struct {
-		Pushed int `json:"pushed"`
+
+	// Durable-availability gate: a user who never went Available isn't pushed.
+	if got := ring(); got != 0 {
+		t.Fatalf("ring before going Available should push 0, got %d", got)
 	}
-	json.Unmarshal(w.Body.Bytes(), &ringResp)
-	if ringResp.Pushed != 1 {
-		t.Fatalf("ring should target 1 subscription, got %d", ringResp.Pushed)
+
+	// Agent goes Available → ring pushes.
+	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := ring(); got != 1 {
+		t.Fatalf("ring should target 1 subscription, got %d", got)
+	}
+
+	// Multi-device: a second browser's subscription also rings.
+	if err := upsertSubscription(db, testRef, uid, "other-sess", pushSub{endpoint: "https://push.example/y", p256dh: "k", auth: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ring(); got != 2 {
+		t.Fatalf("ring should target both of the user's subscriptions, got %d", got)
+	}
+
+	// Pause (or logout) closes the gate again.
+	clearAvailability(db, uid)
+	if got := ring(); got != 0 {
+		t.Fatalf("ring after Pause should push 0, got %d", got)
+	}
+	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", ""); err != nil {
+		t.Fatal(err)
 	}
 
 	// The agent's console fetches pending invites (authed context).

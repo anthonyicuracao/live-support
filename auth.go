@@ -1229,6 +1229,9 @@ func (a *authApp) logout(w http.ResponseWriter, r *http.Request) {
 			deleteAuthSession(info.db, raw)
 		}
 	}
+	// "Available until Pause or log out" — logging out ends durable
+	// availability, so guests stop seeing (and ringing) this agent.
+	clearAvailability(info.db, info.user.ID)
 	a.clearSessionCookie(w)
 	http.Redirect(w, r, "/login?ref="+url.QueryEscape(info.ref), http.StatusSeeOther)
 }

@@ -89,6 +89,7 @@ Each tenant database contains the app tables plus the auth tables:
 | invites | Single-use invitation links for creating accounts. | token_hash, role, username, created_by, expires_at, redeemed_at |
 | password_resets | One-time, admin-issued password-reset links. | token_hash, user_id, created_by, expires_at, used_at |
 | push_subscriptions | Web Push endpoints for backgrounded-tab call delivery (§1.9). | user_id, session_id, endpoint, p256dh, auth |
+| agent_availability | Durable availability — "Available until Pause or log out" (§1.10). | user_id, available, session_id, display_name, has_camera |
 
 ### 1.6 Server
 
@@ -162,6 +163,17 @@ Push is **additive**: the in-process inbox-over-WebSocket relay stays the instan
 - **Service worker + PWA** — `static/sw.js` (scope `/`) shows the notification and handles the click; `manifest.webmanifest` makes the console installable.
 - **Subscriptions** — stored per-tenant in `push_subscriptions`, tied to the authenticated user; dead endpoints (HTTP 404/410) are pruned automatically.
 - **Endpoints** — `POST /api/push/{subscribe,unsubscribe}` (authenticated), `POST /api/call/ring` + `/api/call/ring/clear` (called by the guest on ring/cancel), `GET /api/call/pending` (the console's re-hydration check).
+
+### 1.10 Durable availability ("Available until Pause or log out")
+
+Live WS presence only knows about open tabs — on its own it would make an agent vanish the moment they close the console, even though push could still reach them. **Durable availability** fixes that: the toggle's truth lives server-side (`agent_availability`, per-tenant), set on Go-Available and cleared only by **Pause** or **logout**.
+
+- **Closed-tab discovery** — guests merge live WS presence with `GET /api/agents/available` (agents who are durably available **and** hold ≥1 push subscription), so a closed-tab agent stays visibly callable. Live presence wins on collisions.
+- **Resume on reopen** — the console restores the toggle from the server on load. No media is held while idle; **Accept** acquires the mic/camera from its own click gesture (Safari-safe), so a reopened console can answer immediately.
+- **Server-side ring gate** — `/api/call/ring` drops pushes for agents who aren't durably available, so a Paused or logged-out agent can never be rung by a guest holding a stale roster.
+- **Every browser rings** — a ring pushes **all** of the user's subscriptions (e.g. Safari *and* Chrome), not just the targeted session; the agent answers wherever they see it first.
+- **Fail fast** — when an agent has no open tab and no push subscription took the ring, the guest goes straight to the message form instead of ringing a void for 30 s.
+- **Dead-caller recovery** — accepting a stale invite whose caller is gone recovers after 12 s ("The caller is no longer there.") instead of wedging the console.
 
 > This desktop/PWA tier covers a backgrounded or closed *browser*. A fully asleep phone still needs a native app with APNs/FCM — a later phase that the push model here de-risks.
 
@@ -303,6 +315,7 @@ No changes to the guest page itself are required — it is ready to receive thes
 | Instant messaging (agent ↔ guest text chat) | ✓ Done | Ephemeral, over inbox channels. Agents initiate and see the full roster; guests can only reply. |
 | Real-time presence and signaling (built-in WebSocket hub) | ✓ Done | Complete. |
 | Web Push — backgrounded/closed-tab call delivery (§1.9) | ✓ Done | VAPID + service worker + PWA; pending-invite re-hydration on reopen. Falls back to the WS path when push is off. |
+| Durable availability — closed-tab discovery, resume, ring gate (§1.10) | ✓ Done | Server-side toggle truth; guests merge live presence with push-reachable agents; rings hit every subscribed browser; fail-fast + dead-caller recovery. |
 | Media UX — caller modal, Available/Pause, mic/camera pickers, mid-call switch | ✓ Done | Deferred, mode-aware permission; stream reuse (no re-prompt on accept); device pickers on both pages. |
 | Database — embedded SQLite, multi-tenant | ✓ Done | One database file per tenant (ref) in `data/`, created automatically. App + auth tables per tenant (see §1.5). |
 | Go server — single binary, embedded frontend, TURN proxy | ✓ Done | Complete. |

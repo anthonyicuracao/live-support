@@ -104,13 +104,43 @@
   try { selectedMicId = localStorage.getItem(STORAGE_MIC) || ""; } catch (e) {}
   try { selectedCamId = localStorage.getItem(STORAGE_CAM) || ""; } catch (e) {}
 
-  // ─── Presence ──────────────────────────────────────────────────────────
-  presenceChannel = S.joinPresenceChannel(params.ref, presenceData, (users) => {
-    // Only track auth users with same ref who are available and have mic
-    authUsers = users.filter(
-      (u) => u.role === "auth" && u.status === "available" && u.has_mic
+  // ─── Presence + durable-agent discovery ────────────────────────────────
+  // Callable agents come from TWO sources, merged:
+  //  - live WS presence: agents with the console open right now (instant), and
+  //  - GET /api/agents/available: agents who went Available and then closed
+  //    the tab / quit the browser — still reachable via Web Push until they
+  //    Pause or log out. Live presence wins on session_id collisions.
+  let presenceAgents = [];
+  let restAgents = [];
+  function mergeAgents() {
+    const live = new Set(presenceAgents.map((u) => u.session_id));
+    authUsers = presenceAgents.concat(
+      restAgents.filter((a) => !live.has(a.session_id))
     );
     if (state === "ready") updateCallButtons();
+  }
+  presenceChannel = S.joinPresenceChannel(params.ref, presenceData, (users) => {
+    // Only track auth users with same ref who are available and have mic
+    presenceAgents = users.filter(
+      (u) => u.role === "auth" && u.status === "available" && u.has_mic
+    );
+    mergeAgents();
+  });
+  async function refreshRestAgents() {
+    try {
+      const r = await fetch(
+        `/api/agents/available?ref=${encodeURIComponent(params.ref)}`
+      );
+      if (r.ok) restAgents = (await r.json()).agents || [];
+    } catch (e) {
+      /* keep the last list — live presence still works */
+    }
+    mergeAgents();
+  }
+  refreshRestAgents();
+  setInterval(refreshRestAgents, 15000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshRestAgents();
   });
 
   // ─── Device pickers (mic / camera), like Zoom/Meet ─────────────────────
@@ -335,8 +365,24 @@
       callType,
     });
     // …and a server-side Web Push so a backgrounded/closed agent tab is woken
-    // and rung (best-effort; no-op when the agent has no push subscription).
-    ringPush(targetSessionId, currentCallId, callType);
+    // and rung (no-op when the agent has no push subscription).
+    const pushed = await ringPush(targetSessionId, currentCallId, callType);
+
+    // Fail fast if the agent is genuinely unreachable: no open tab (live
+    // presence) AND the push found no subscription. Don't make the guest sit
+    // through a 30s ring that can't be answered.
+    const liveTarget = presenceAgents.some(
+      (u) => u.session_id === targetSessionId
+    );
+    if (!pushed && !liveTarget) {
+      await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
+      await S.updateCallRecord(currentCallId, { status: "timeout" });
+      S.hideSection(".call-outgoing");
+      await resetToReady();
+      refreshRestAgents(); // drop the stale entry from discovery
+      showMessageForm("We were unable to reach an agent. Please leave a message.");
+      return;
+    }
 
     // Ring for 30s so a push-woken agent has time to open and answer, then fall
     // back to the leave-a-message form.
@@ -352,18 +398,26 @@
   }
 
   // ─── Web Push ring helpers (Phase 2) ───────────────────────────────────
-  function ringPush(targetSessionId, callId, callType) {
-    fetch("/api/call/ring", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ref: params.ref,
-        toSession: targetSessionId,
-        callId,
-        callType,
-        callerName: params.name,
-      }),
-    }).catch(() => {});
+  // Returns how many push subscriptions took the ring (0 = closed-tab agent is
+  // unreachable; the caller uses this to fail fast instead of ringing a void).
+  async function ringPush(targetSessionId, callId, callType) {
+    try {
+      const r = await fetch("/api/call/ring", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ref: params.ref,
+          toSession: targetSessionId,
+          callId,
+          callType,
+          callerName: params.name,
+        }),
+      });
+      if (r.ok) return (await r.json()).pushed || 0;
+    } catch (e) {
+      /* treated as 0 — live presence may still deliver over WS */
+    }
+    return 0;
   }
   function clearRing(callId) {
     fetch("/api/call/ring/clear", {

@@ -153,9 +153,22 @@ func deleteSubscription(db *sql.DB, endpoint string) {
 // subsForSession returns the push subscriptions registered against a presence
 // session_id (the target the guest is calling).
 func subsForSession(db *sql.DB, ref, sessionID string) []pushSub {
-	rows, err := db.Query(
+	return querySubs(db,
 		`SELECT user_id, endpoint, p256dh, auth FROM push_subscriptions WHERE ref = ? AND session_id = ?`,
 		ref, sessionID)
+}
+
+// subsForUser returns ALL of a user's push subscriptions — every browser they
+// enabled push in (e.g. Safari and Chrome) rings, not just the session the
+// guest happened to target.
+func subsForUser(db *sql.DB, ref string, userID int64) []pushSub {
+	return querySubs(db,
+		`SELECT user_id, endpoint, p256dh, auth FROM push_subscriptions WHERE ref = ? AND user_id = ?`,
+		ref, userID)
+}
+
+func querySubs(db *sql.DB, query string, args ...any) []pushSub {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil
 	}
@@ -286,6 +299,19 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		// No push subscription for this agent — instant inbox relay handles it.
 		writeJSON(w, 200, map[string]any{"pushed": 0})
 		return
+	}
+	// Durable-availability gate: a Paused or logged-out agent must never be
+	// pushed, even when a guest holds a stale roster naming their session.
+	userID := subs[0].userID
+	if !userIsAvailable(db, userID) {
+		log.Printf("[Ring] dropped: user %d not available", userID)
+		writeJSON(w, 200, map[string]any{"pushed": 0})
+		return
+	}
+	// Ring every browser this agent enabled push in, not just the targeted
+	// session — the agent answers wherever they see it first.
+	if all := subsForUser(db, body.Ref, userID); len(all) > 0 {
+		subs = all
 	}
 	callType := body.CallType
 	if callType != "video" {

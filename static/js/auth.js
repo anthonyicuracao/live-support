@@ -241,28 +241,42 @@
     sessionStorage.setItem("authSessionId", sessionId);
   }
 
-  // ─── Availability toggle (persisted per-admin) ────────────────────────
-  // When the admin flips this off they appear "offline" to guests and to
-  // the /api/online endpoint, so no one can call them.
-  const STORAGE_AVAILABLE = "auth-user-available";
-  function loadAvailability() {
-    // ALWAYS start Paused on a fresh page load. Being Available requires a live
-    // microphone (and camera) stream that only a user gesture — the Available
-    // click — can create; we can't re-acquire it automatically on load. So we
-    // never restore a stale "available" from a previous session, which would
-    // otherwise show the agent as Available (and callable) with no live stream.
-    return false;
-  }
-  function saveAvailability(on) {
-    try {
-      localStorage.setItem(STORAGE_AVAILABLE, String(on));
-    } catch (e) {
-      // Best-effort — toggle still works for the current session.
-    }
-  }
-  let isAvailable = loadAvailability();
+  // ─── Availability toggle (durable, server-side) ───────────────────────
+  // "Available until Pause or log out": the toggle's truth lives in the
+  // agent_availability table, not this tab. It survives tab close, browser
+  // quit, and sleep — a push-subscribed agent stays discoverable and ringable
+  // the whole time. The console restores the toggle from the server on load;
+  // no live media stream is needed while idle, because accepting a call
+  // acquires media from the Accept click itself (a user gesture, so Safari
+  // prompts cleanly even on a freshly reopened tab).
+  let isAvailable = false;
   function availabilityStatus() {
     return isAvailable ? "available" : "offline";
+  }
+  // Push the durable state (and this tab's session id) to the server. Called
+  // on every toggle flip and when resuming availability in a fresh tab, so
+  // REST-discovered rings always route to the most recent live session.
+  // touchOnly: update the session id/display fields of an already-available
+  // record without touching the availability bit — safe to run on load, where
+  // it could otherwise race a quick Pause click and revive availability.
+  async function postAvailability(touchOnly) {
+    try {
+      await fetch("/api/availability", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          available: isAvailable,
+          touch: !!touchOnly,
+          sessionId,
+          displayName,
+          hasCamera: !!perms.hasCamera,
+          picture: picture || "",
+          onlineSince: presenceData.online_since,
+        }),
+      });
+    } catch (e) {
+      // Best effort — live WS presence still covers open-tab callability.
+    }
   }
 
   // ─── Video-mode preference + deferred media acquisition ────────────────
@@ -392,6 +406,22 @@
     }
   }
   let picture = loadPicture();
+
+  // Restore durable availability before presence is announced, so a reopened
+  // console comes back Available (Ron-rule: until Pause or log out) without
+  // re-acquiring media — Accept will do that from its own click gesture.
+  try {
+    const r = await fetch("/api/availability");
+    if (r.ok) {
+      const saved = await r.json();
+      if (saved.available) {
+        isAvailable = true;
+        perms.hasCamera = !!saved.hasCamera;
+      }
+    }
+  } catch (e) {
+    // Server unreachable — start Paused; the toggle still works.
+  }
 
   const presenceData = {
     session_id: sessionId,
@@ -552,14 +582,14 @@
         // show real device names.
         populateDevicesSoon();
       } else if (liveStream) {
-        // Going Paused: release the camera/mic so the device indicator clears,
-        // and stop server-side push (we're not taking calls).
+        // Going Paused: release the camera/mic so the device indicator clears.
+        // The push subscription stays armed — the server's availability gate
+        // (set below) is what stops rings, and re-going-Available is instant.
         liveStream.getTracks().forEach((t) => t.stop());
         liveStream = null;
-        if (window.Push) Push.disablePush();
       }
       isAvailable = goingAvailable;
-      saveAvailability(isAvailable);
+      await postAvailability();
       renderAvailabilityUI();
       // Arm Web Push (if permission already granted) and show the status line,
       // or hide it when pausing.
@@ -593,6 +623,9 @@
       if (presenceChannel) {
         await S.updatePresence(presenceChannel, presenceData);
       }
+      // Guests discovering us through the REST list see the durable record —
+      // keep its display name in sync too (touch: never changes the bit).
+      if (isAvailable) postAvailability(true);
     };
     // Commit on blur and on Enter; keeps presence in sync without spamming
     // an update on every keystroke.
@@ -797,6 +830,9 @@
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) checkPendingInvites();
   });
+  // Safari fires focus more reliably than visibilitychange when the window
+  // (not just the tab) regains attention — cover both.
+  window.addEventListener("focus", () => checkPendingInvites());
 
   // ─── Push status indicator ─────────────────────────────────────────────
   // Make the otherwise-invisible push state visible: are background call alerts
@@ -817,7 +853,8 @@
     pushEnableBtn.style.display = "none";
     if (state === "armed") {
       pushStatusEl.classList.add("is-on");
-      pushStatusTextEl.textContent = "🔔 Background call alerts are on.";
+      pushStatusTextEl.textContent =
+        "🔔 You'll be rung for calls even after closing this tab — until you Pause or log out.";
     } else if (state === "blocked") {
       pushStatusEl.classList.add("is-blocked");
       pushStatusTextEl.textContent =
@@ -859,15 +896,35 @@
       }
     });
   }
+  // Arm push on load when resuming durable availability in a fresh tab, then
+  // re-point the server's availability record at THIS tab's session id so
+  // REST-discovered rings route to the live session (the push subscription's
+  // session id was just re-keyed by enablePush). No-op while Paused.
+  syncPushStatus().then(() => {
+    if (isAvailable) postAvailability(true); // touch: re-point only, never revive
+  });
 
   // ─── Cleanup on page unload ────────────────────────────────────────────
-  window.addEventListener("beforeunload", () => {
+  // This ends the TAB's live presence only — durable availability (the
+  // server-side toggle) deliberately survives so a push-subscribed agent stays
+  // callable after closing the tab. Safari doesn't fire beforeunload reliably,
+  // so listen to pagehide as well and make the cleanup idempotent.
+  let unloadDone = false;
+  function unloadCleanup() {
+    if (unloadDone) return;
+    unloadDone = true;
     clearInterval(heartbeatTimer);
     S.updateSessionStatus(sessionId, "offline");
     if (presenceChannel) presenceChannel.unsubscribe();
     if (inboxChannel) inboxChannel.unsubscribe();
     if (currentCallChannel) currentCallChannel.unsubscribe();
+  }
+  // persisted=true means the page is going into the back/forward cache and may
+  // come back alive — don't tear down presence for that.
+  window.addEventListener("pagehide", (e) => {
+    if (!e.persisted) unloadCleanup();
   });
+  window.addEventListener("beforeunload", unloadCleanup);
 
   // ─── Render guest list ─────────────────────────────────────────────────
   function renderGuestList() {
@@ -991,8 +1048,8 @@
       if (state !== "calling") return;
       await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
       await S.updateCallRecord(currentCallId, { status: "timeout" });
+      await resetToReady(); // resetToReady hides .alert — alert AFTER it
       showAlert("User did not answer.");
-      await resetToReady();
     }, 10000);
   }
 
@@ -1054,10 +1111,10 @@
     // stop ringing and return to ready so the console can never get stuck on a
     // dead incoming call (which would also block the availability toggle).
     clearTimeout(incomingTimeoutTimer);
-    incomingTimeoutTimer = setTimeout(() => {
+    incomingTimeoutTimer = setTimeout(async () => {
       if (state === "incoming") {
+        await resetToReady(); // resetToReady hides .alert — alert AFTER it
         showAlert(`Missed call from ${data.callerName || "a guest"}.`);
-        resetToReady();
       }
     }, 35000);
   }
@@ -1094,6 +1151,18 @@
     // Signal accepted — caller (guest) will send the offer
     await S.sendCallSignal(currentCallChannel, { type: "call-accepted" });
     state = "active-call"; // Will get offer next; offer handler sets up the PC
+
+    // The caller may already be gone (stale invite, guest closed the page,
+    // network drop). If no offer arrives, recover instead of wedging in a
+    // dead "active-call" that would also block the availability toggle.
+    clearTimeout(callTimeoutTimer);
+    callTimeoutTimer = setTimeout(async () => {
+      if (state === "active-call" && !peerConnection) {
+        await S.updateCallRecord(currentCallId, { status: "missed" });
+        await resetToReady(); // resetToReady hides .alert — alert AFTER it
+        showAlert("The caller is no longer there.");
+      }
+    }, 12000);
   });
 
   // ─── Decline incoming call ─────────────────────────────────────────────
@@ -1122,8 +1191,8 @@
         if (state === "calling") {
           clearTimeout(callTimeoutTimer);
           await S.updateCallRecord(currentCallId, { status: "declined" });
+          await resetToReady(); // resetToReady hides .alert — alert AFTER it
           showAlert("User declined the call.");
-          await resetToReady();
         }
         break;
 
@@ -1205,6 +1274,7 @@
 
   // ─── Handle offer (auth is callee, guest sent offer after auth accepted) ─
   async function handleOffer(sdpString) {
+    clearTimeout(callTimeoutTimer); // caller is alive — cancel the no-offer net
     const callType = incomingCall?.callType || "audio";
     const iceConfig = await S.getIceConfig();
 
