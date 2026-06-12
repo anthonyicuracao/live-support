@@ -391,18 +391,38 @@ window.Shared = (() => {
   }
 
   // Browsers block audio that isn't started from a user gesture. Call this from a
-  // click (e.g. Go-Available) to UNLOCK playback — a muted play/pause — so the
-  // ring can sound when a call later arrives asynchronously.
+  // click (e.g. Go-Available) to UNLOCK playback — a silenced play/pause — so the
+  // ring can sound when a call later arrives asynchronously. Silenced through
+  // BOTH muted and volume=0: some browsers ignore one or the other on an audio
+  // element that isn't in the DOM, which made priming audibly blip the ringtone.
+  // Primed at most once per page — repeat toggles never replay it.
+  let ringtonePrimed = false;
   function primeRingtone() {
     const a = ensureRingtone();
+    if (ringtonePrimed || !a.paused) return;
+    ringtonePrimed = true;
     a.muted = true;
-    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; })
-            .catch(() => { a.muted = false; });
+    a.volume = 0;
+    a.play()
+      .then(() => {
+        // If a real ring started while priming was in flight, leave it alone.
+        if (!a.muted && a.volume > 0) return;
+        a.pause();
+        a.currentTime = 0;
+        a.muted = false;
+        a.volume = 1;
+      })
+      .catch(() => {
+        ringtonePrimed = false; // gesture didn't unlock — allow a retry
+        a.muted = false;
+        a.volume = 1;
+      });
   }
 
   function playRingtone() {
     const a = ensureRingtone();
     a.muted = false;
+    a.volume = 1;
     a.currentTime = 0;
     a.play().catch((e) => console.warn("[Ringtone] Play failed:", e.message));
   }
