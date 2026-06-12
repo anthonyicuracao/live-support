@@ -174,6 +174,11 @@ Live WS presence only knows about open tabs — on its own it would make an agen
 - **Every browser rings** — a ring pushes **all** of the user's subscriptions (e.g. Safari *and* Chrome), not just the targeted session; the agent answers wherever they see it first.
 - **Fail fast** — when an agent has no open tab and no push subscription took the ring, the guest goes straight to the message form instead of ringing a void for 30 s.
 - **Dead-caller recovery** — accepting a stale invite whose caller is gone recovers after 12 s ("The caller is no longer there.") instead of wedging the console.
+- **User-centric ring fan-out** — a guest targets one session id (possibly from a stale roster), but the server resolves the *user* and alerts every surface at once: a WS broadcast to the user-keyed inbox (`inbox:user:<ref>:<id>` — every live console rings, whatever its session id), the pending invite, and a push to all subscriptions. Multiple ringing consoles resolve cleanly: first Accept wins, the rest reset.
+- **Ring like a phone** — while a call is unanswered the server re-pushes every 6 s; the notification re-alerts (same tag + renotify) so the agent hears a repeating ring, not one missable ding. Stops on answer/decline/cancel/expiry.
+- **Setup-time test notification** — clicking Enable immediately shows a "Call alerts are on" notification, forcing the browser's OS-level registration while the user is watching (macOS prompts for app notification permission on first post — far better surfaced at setup than during a missed call).
+
+> **Field notes (macOS):** push services answer 201 even when the user sees nothing — always verify *display*, not just acceptance. Things that silently eat delivered notifications: macOS **Do Not Disturb/Focus**, and Chrome missing its **app-level** notification authorization (System Settings → Notifications → Google Chrome → Allow — separate from the per-site permission). Safari opens notification-clicked pages without a user gesture, so the in-page ringtone stays blocked until the first click — the 6 s re-push alert sound covers that gap.
 
 > This desktop/PWA tier covers a backgrounded or closed *browser*. A fully asleep phone still needs a native app with APNs/FCM — a later phase that the push model here de-risks.
 
