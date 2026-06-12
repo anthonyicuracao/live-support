@@ -504,6 +504,14 @@ func (h *Hub) unsubscribe(c *Conn, channel string) {
 	}
 }
 
+// subscriberCount reports how many live connections are subscribed to a
+// channel — diagnostic for "did anyone actually hear this broadcast?".
+func (h *Hub) subscriberCount(channel string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.channels[channel])
+}
+
 func (h *Hub) broadcast(channel, event string, payload json.RawMessage) {
 	msg := ServerMsg{Type: "broadcast", Channel: channel, Event: event, Payload: payload}
 	h.mu.Lock()

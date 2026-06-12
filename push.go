@@ -379,11 +379,12 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		"callerName": callerName,
 		"callType":   callType,
 	})
+	fanout := hub.subscriberCount(userInboxChannel(body.Ref, userID))
 	hub.broadcast(userInboxChannel(body.Ref, userID), "message", wsPayload)
 
 	subs := subsForUser(db, body.Ref, userID)
-	log.Printf("[Ring] ref=%s to=%s… call=%s… user=%d subs=%d",
-		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), userID, len(subs))
+	log.Printf("[Ring] ref=%s to=%s… call=%s… user=%d consoles=%d subs=%d",
+		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), userID, fanout, len(subs))
 	if pushEnabled() && len(subs) > 0 {
 		payload, _ := json.Marshal(map[string]any{
 			"type":       "incoming-call",
