@@ -980,9 +980,12 @@
     }
     if (data.type !== "incoming-call") return;
 
-    // If we're not free, immediately tell the caller we're busy
-    if (state !== "ready") {
-      S.sendToInbox(data.callerId, { type: "call-busy" });
+    // Only ring when we're free AND actually Available this session. A Paused
+    // agent (or one mid-call) must never ring — otherwise a stray/stale call
+    // would start ringing and wedge the availability toggle ("can't change
+    // during a call"). Tell the caller we're busy and drop it.
+    if (state !== "ready" || !isAvailable) {
+      if (data.callerId) S.sendToInbox(data.callerId, { type: "call-busy" });
       return;
     }
 

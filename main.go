@@ -1596,6 +1596,12 @@ func main() {
 	}
 	fileServer := http.FileServer(http.FS(staticRoot))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Always revalidate the frontend (HTML/JS/CSS) so a deploy takes effect
+		// on the next load instead of being masked by a stale browser cache —
+		// embedded assets carry no ETag/Last-Modified, so without this a browser
+		// may serve old JS indefinitely. The service worker is exempt: browsers
+		// must be able to refetch /sw.js to pick up updates regardless.
+		w.Header().Set("Cache-Control", "no-cache")
 		// The agent dashboard requires a signed-in session (the dev-mode
 		// bypass below is for local testing only). Guests (index.html) stay
 		// public — they never log in.
