@@ -326,7 +326,7 @@
     S.hideSection(".call");
     S.showSection(".call-outgoing");
 
-    // Notify target
+    // Notify target — instant path when the agent's tab is open…
     await S.sendToInbox(targetSessionId, {
       type: "incoming-call",
       callId: currentCallId,
@@ -334,16 +334,43 @@
       callerName: params.name,
       callType,
     });
+    // …and a server-side Web Push so a backgrounded/closed agent tab is woken
+    // and rung (best-effort; no-op when the agent has no push subscription).
+    ringPush(targetSessionId, currentCallId, callType);
 
-    // 5-second timeout → show message form
+    // Ring for 30s so a push-woken agent has time to open and answer, then fall
+    // back to the leave-a-message form.
     callTimeoutTimer = setTimeout(async () => {
       if (state !== "calling") return;
       await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
       await S.updateCallRecord(currentCallId, { status: "timeout" });
+      clearRing(currentCallId);
       S.hideSection(".call-outgoing");
       await resetToReady();
       showMessageForm("We were unable to reach an agent. Please leave a message.");
-    }, 10000);
+    }, 30000);
+  }
+
+  // ─── Web Push ring helpers (Phase 2) ───────────────────────────────────
+  function ringPush(targetSessionId, callId, callType) {
+    fetch("/api/call/ring", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ref: params.ref,
+        toSession: targetSessionId,
+        callId,
+        callType,
+        callerName: params.name,
+      }),
+    }).catch(() => {});
+  }
+  function clearRing(callId) {
+    fetch("/api/call/ring/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callId }),
+    }).catch(() => {});
   }
 
   // ─── Cancel outgoing call ──────────────────────────────────────────────
@@ -352,6 +379,7 @@
     clearTimeout(callTimeoutTimer);
     await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
     await S.updateCallRecord(currentCallId, { status: "cancelled" });
+    clearRing(currentCallId);
     S.hideSection(".call-outgoing");
     await resetToReady();
   });
@@ -418,6 +446,7 @@
         // We (guest) are the caller; auth accepted → create offer
         if (state !== "calling") return;
         clearTimeout(callTimeoutTimer);
+        clearRing(currentCallId);
         state = "active-call";
         await startAsInitiator();
         break;
@@ -425,6 +454,7 @@
       case "call-declined":
         if (state === "calling") {
           clearTimeout(callTimeoutTimer);
+          clearRing(currentCallId);
           await S.updateCallRecord(currentCallId, { status: "declined" });
           S.hideSection(".call-outgoing");
           await resetToReady();
@@ -435,6 +465,7 @@
       case "call-busy":
         if (state === "calling") {
           clearTimeout(callTimeoutTimer);
+          clearRing(currentCallId);
           await S.updateCallRecord(currentCallId, { status: "busy" });
           S.hideSection(".call-outgoing");
           await resetToReady();

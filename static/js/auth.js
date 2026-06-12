@@ -520,10 +520,15 @@
         // Permission just granted — re-enumerate (with retry) so the pickers
         // show real device names.
         populateDevicesSoon();
+        // Subscribe to Web Push so calls reach us even when the tab is hidden
+        // or closed (best-effort; degrades to the inbox path where unsupported).
+        if (window.Push) Push.enablePush(sessionId);
       } else if (liveStream) {
-        // Going Paused: release the camera/mic so the device indicator clears.
+        // Going Paused: release the camera/mic so the device indicator clears,
+        // and stop server-side push (we're not taking calls).
         liveStream.getTracks().forEach((t) => t.stop());
         liveStream = null;
+        if (window.Push) Push.disablePush();
       }
       isAvailable = goingAvailable;
       saveAvailability(isAvailable);
@@ -751,6 +756,16 @@
   // ─── Inbox ─────────────────────────────────────────────────────────────
   inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);
 
+  // ─── Web Push (Phase 2) ────────────────────────────────────────────────
+  // Register the service worker so a backgrounded/closed tab can be woken and
+  // rung, and re-hydrate any call still ringing for us when the page (re)gains
+  // focus — e.g. right after the agent clicks a push notification.
+  if (window.Push) Push.registerServiceWorker();
+  checkPendingInvites();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkPendingInvites();
+  });
+
   // ─── Cleanup on page unload ────────────────────────────────────────────
   window.addEventListener("beforeunload", () => {
     clearInterval(heartbeatTimer);
@@ -910,6 +925,13 @@
       return;
     }
 
+    presentIncomingCall(data);
+  }
+
+  // Render the incoming-call UI and start ringing. Shared by the live inbox
+  // path and the pending-invite re-hydration (after a push wakes the agent).
+  // `data` is { callId, callType, callerName, callerId? }.
+  function presentIncomingCall(data) {
     state = "incoming";
     callRole = "callee";
     incomingCall = data;
@@ -929,6 +951,20 @@
     S.hideSection(".call");
     S.hideSection(".logs");
     S.showSection(".call-incoming");
+  }
+
+  // After a push notification wakes/focuses the console, re-hydrate any call
+  // that's still ringing for this agent (the guest waits ~30s).
+  async function checkPendingInvites() {
+    if (state !== "ready") return;
+    try {
+      const r = await fetch("/api/call/pending");
+      if (!r.ok) return;
+      const { invites } = await r.json();
+      if (invites && invites.length) presentIncomingCall(invites[0]);
+    } catch (e) {
+      /* best effort */
+    }
   }
 
   // ─── Accept incoming call ──────────────────────────────────────────────

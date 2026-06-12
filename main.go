@@ -32,6 +32,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -187,6 +188,23 @@ CREATE TABLE IF NOT EXISTS password_resets (
 );
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_password_resets_expires ON password_resets(expires_at);
+-- Web Push subscriptions (Phase 2). One row per browser push endpoint, tied to
+-- the authenticated user. session_id is the agent's *current* presence session
+-- so the ring path can map a target session to a user's subscriptions; it is
+-- refreshed on every (re)subscribe. Endpoint is the unique push-service URL.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ref          TEXT    NOT NULL,
+  user_id      INTEGER NOT NULL,
+  session_id   TEXT    NOT NULL DEFAULT '',
+  endpoint     TEXT    NOT NULL UNIQUE,
+  p256dh       TEXT    NOT NULL,
+  auth         TEXT    NOT NULL,
+  created_at   TEXT    NOT NULL,
+  last_seen_at TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_session ON push_subscriptions(ref, session_id);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(ref, user_id);
 CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
 `
 
@@ -1416,9 +1434,16 @@ func iceConfigHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	genVAPID := flag.Bool("genvapid", false, "generate a Web Push VAPID keypair and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if *genVAPID {
+		if err := printVAPIDKeys(); err != nil {
+			log.Fatal("genvapid:", err)
+		}
 		return
 	}
 
@@ -1490,10 +1515,20 @@ func main() {
 	// Validated to an http(s):// or same-origin "/path" URL; anything else
 	// (or empty) falls back to the bundled /public/favicon.svg.
 	faviconURL := validURLOrPath(os.Getenv("FAVICON_URL"))
+	// Phase 2 Web Push: VAPID keypair from env. The public key is exposed to the
+	// client so it can subscribe; the private key signs the push requests and
+	// never leaves the server. Unset → push is disabled and the app degrades to
+	// the inbox-over-WS path (no behaviour change).
+	initPush(
+		strings.TrimSpace(os.Getenv("VAPID_PUBLIC_KEY")),
+		strings.TrimSpace(os.Getenv("VAPID_PRIVATE_KEY")),
+		strings.TrimSpace(os.Getenv("VAPID_SUBJECT")),
+	)
 	mux.HandleFunc("/api/connect-config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{
-			"primaryColor": primaryColor,
-			"faviconUrl":   faviconURL,
+			"primaryColor":   primaryColor,
+			"faviconUrl":     faviconURL,
+			"vapidPublicKey": vapid.publicKey,
 		})
 	})
 
@@ -1545,6 +1580,14 @@ func main() {
 		log.Fatal("init auth:", err)
 	}
 	auth.Mount(mux)
+
+	// Phase 2 Web Push routes (subscribe/unsubscribe, call ring + pending). The
+	// authed routes reuse the auth middleware to resolve tenant + user.
+	mountPush(mux, auth)
+
+	// Serve the PWA manifest with the correct type (Go's MIME table has no
+	// .webmanifest entry, so it would otherwise fall back to text/plain).
+	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
 
 	// Static files (embedded)
 	staticRoot, err := fs.Sub(staticFS, "static")
