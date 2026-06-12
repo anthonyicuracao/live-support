@@ -191,3 +191,24 @@ func TestVAPIDSubjectNormalization(t *testing.T) {
 	}
 	initPush("", "", "") // leave package state with push disabled
 }
+
+// TestInviteStillRinging: the re-push loop's stop condition — true while the
+// invite is pending, false once consumed or expired.
+func TestInviteStillRinging(t *testing.T) {
+	putInvite(pendingInvite{ref: "demo", userID: 11, callID: "ring-A", fromName: "A", callType: "audio"})
+	if !inviteStillRinging("ring-A") {
+		t.Fatal("freshly placed invite should still be ringing")
+	}
+	dropInvite("ring-A")
+	if inviteStillRinging("ring-A") {
+		t.Fatal("consumed invite must stop the re-push loop")
+	}
+	// Expired invite also stops the loop.
+	invitesMu.Lock()
+	invites["ring-B"] = pendingInvite{ref: "demo", userID: 11, callID: "ring-B", expiresAt: time.Now().Add(-time.Second)}
+	invitesMu.Unlock()
+	if inviteStillRinging("ring-B") {
+		t.Fatal("expired invite must stop the re-push loop")
+	}
+	dropInvite("ring-B")
+}

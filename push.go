@@ -108,6 +108,15 @@ func dropInvite(callID string) {
 	invitesMu.Unlock()
 }
 
+// inviteStillRinging reports whether a call is still waiting to be answered —
+// the re-push loop stops the moment the invite is consumed or expires.
+func inviteStillRinging(callID string) bool {
+	invitesMu.Lock()
+	defer invitesMu.Unlock()
+	inv, ok := invites[callID]
+	return ok && inv.expiresAt.After(time.Now())
+}
+
 func invitesForUser(ref string, userID int64) []pendingInvite {
 	now := time.Now()
 	invitesMu.Lock()
@@ -394,12 +403,25 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 			"callerName": callerName,
 		})
 		// Send in the background so a slow/dead push endpoint never delays the
-		// guest's ring request (which is waiting on this response).
-		go func(subs []pushSub) {
-			for _, s := range subs {
-				sendWebPush(db, s, payload)
+		// guest's ring request (which is waiting on this response). Then keep
+		// RE-pushing every few seconds while the call is still ringing — the
+		// notification re-alerts (same tag + renotify) so the agent hears a
+		// repeating ring instead of one easily-missed ding.
+		go func(callID string, payload []byte) {
+			for i := 0; ; i++ {
+				if i > 0 {
+					time.Sleep(6 * time.Second)
+					if !inviteStillRinging(callID) {
+						return // answered, declined, cancelled, or expired
+					}
+					log.Printf("[Ring] re-push #%d call=%s…", i, safePrefix(callID, 8))
+				}
+				// Re-query each round so endpoints pruned mid-ring drop out.
+				for _, s := range subsForUser(db, body.Ref, userID) {
+					sendWebPush(db, s, payload)
+				}
 			}
-		}(subs)
+		}(body.CallID, payload)
 	}
 	writeJSON(w, 200, map[string]any{"pushed": len(subs), "queued": true})
 }
