@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,9 +33,15 @@ type vapidConfig struct {
 var vapid vapidConfig
 
 func initPush(publicKey, privateKey, subject string) {
+	// webpush-go prepends "mailto:" itself (unless the subscriber is an https
+	// URL), so a subject configured WITH the scheme goes out as
+	// "mailto:mailto:…" in the JWT sub claim. Apple validates the claim and
+	// rejects every push with 403 BadJwtToken; FCM doesn't validate sub, which
+	// is how this stayed invisible from Chrome's side. Store the bare address.
+	subject = strings.TrimPrefix(strings.TrimSpace(subject), "mailto:")
 	vapid = vapidConfig{publicKey: publicKey, privateKey: privateKey, subject: subject}
 	if subject == "" {
-		vapid.subject = "mailto:admin@localhost"
+		vapid.subject = "admin@localhost"
 	}
 	if pushEnabled() {
 		log.Printf("[Push] Web Push enabled (VAPID public key %s…)", safePrefix(publicKey, 12))

@@ -172,3 +172,22 @@ func TestCallRingFlow(t *testing.T) {
 		t.Fatal("clear should drop the pending invite")
 	}
 }
+
+// TestVAPIDSubjectNormalization: webpush-go prepends "mailto:" itself — a
+// subject configured with the scheme must be stripped or Apple rejects every
+// push with 403 BadJwtToken (sub would be "mailto:mailto:…").
+func TestVAPIDSubjectNormalization(t *testing.T) {
+	cases := map[string]string{
+		"mailto:ops@example.com": "ops@example.com",
+		"ops@example.com":        "ops@example.com",
+		" mailto:x@y.z ":         "x@y.z",
+		"":                       "admin@localhost",
+	}
+	for in, want := range cases {
+		initPush("pub", "priv", in)
+		if vapid.subject != want {
+			t.Errorf("subject %q: want %q, got %q", in, want, vapid.subject)
+		}
+	}
+	initPush("", "", "") // leave package state with push disabled
+}
