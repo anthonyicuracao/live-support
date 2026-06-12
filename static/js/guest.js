@@ -366,15 +366,15 @@
     });
     // …and a server-side Web Push so a backgrounded/closed agent tab is woken
     // and rung (no-op when the agent has no push subscription).
-    const pushed = await ringPush(targetSessionId, currentCallId, callType);
+    const ring = await ringPush(targetSessionId, currentCallId, callType);
 
-    // Fail fast if the agent is genuinely unreachable: no open tab (live
-    // presence) AND the push found no subscription. Don't make the guest sit
-    // through a 30s ring that can't be answered.
+    // Fail fast if the agent is genuinely unreachable: the server couldn't
+    // queue the ring for any available agent AND no live tab holds the
+    // targeted session. Don't make the guest sit through a 30s dead ring.
     const liveTarget = presenceAgents.some(
       (u) => u.session_id === targetSessionId
     );
-    if (!pushed && !liveTarget) {
+    if (!ring.queued && !ring.pushed && !liveTarget) {
       await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
       await S.updateCallRecord(currentCallId, { status: "timeout" });
       S.hideSection(".call-outgoing");
@@ -400,6 +400,9 @@
   // ─── Web Push ring helpers (Phase 2) ───────────────────────────────────
   // Returns how many push subscriptions took the ring (0 = closed-tab agent is
   // unreachable; the caller uses this to fail fast instead of ringing a void).
+  // Returns the server's ring verdict: queued = the ring reached an available
+  // agent's invite queue + live consoles (WS fan-out), pushed = how many push
+  // subscriptions were also alerted. Both false/0 = nobody can answer.
   async function ringPush(targetSessionId, callId, callType) {
     try {
       const r = await fetch("/api/call/ring", {
@@ -409,15 +412,19 @@
           ref: params.ref,
           toSession: targetSessionId,
           callId,
+          callerId: sessionId,
           callType,
           callerName: params.name,
         }),
       });
-      if (r.ok) return (await r.json()).pushed || 0;
+      if (r.ok) {
+        const v = await r.json();
+        return { pushed: v.pushed || 0, queued: !!v.queued };
+      }
     } catch (e) {
-      /* treated as 0 — live presence may still deliver over WS */
+      /* treated as not-queued — live presence may still deliver over WS */
     }
-    return 0;
+    return { pushed: 0, queued: false };
   }
   function clearRing(callId) {
     fetch("/api/call/ring/clear", {

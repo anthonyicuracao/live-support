@@ -164,13 +164,14 @@
       window.location.href = "/account/password";
       return;
     }
-    identity = { ref: me.ref, name: me.name, email: me.email, isAdmin: me.isAdmin };
+    identity = { ref: me.ref, name: me.name, email: me.email, isAdmin: me.isAdmin, userId: me.userId };
   }
 
   const ref     = identity.ref;
   const email   = identity.email || "";
   const name    = identity.name  || "Agent";
   const isAdmin = !!identity.isAdmin;
+  const userId  = identity.userId || 0;
 
   if (!ref) {
     showDenied("Your account does not have a configured domain. Please contact your administrator.");
@@ -820,6 +821,18 @@
 
   // ─── Inbox ─────────────────────────────────────────────────────────────
   inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);
+  // User-keyed inbox: the server fans every ring out to ALL of this user's
+  // live consoles through this channel — so a guest holding a stale roster
+  // (an old session id from a closed tab) still rings the tabs that exist.
+  // Duplicate delivery with the per-session inbox is deduped by callId.
+  if (userId) {
+    window.Realtime
+      .channel(`inbox:user:${ref}:${userId}`)
+      .on("broadcast", { event: "message" }, ({ payload }) => {
+        handleInboxMessage(payload);
+      })
+      .subscribe();
+  }
 
   // ─── Web Push (Phase 2) ────────────────────────────────────────────────
   // Register the service worker so a backgrounded/closed tab can be woken and
@@ -1083,6 +1096,11 @@
     }
     if (data.type !== "incoming-call") return;
 
+    // The same ring can arrive twice (per-session inbox + the user-keyed
+    // fan-out) — if we're already presenting this exact call, swallow the
+    // duplicate silently (it must NOT fall through to the busy reply).
+    if (data.callId && data.callId === currentCallId) return;
+
     // Only ring when we're free AND actually Available this session. A Paused
     // agent (or one mid-call) must never ring — otherwise a stray/stale call
     // would start ringing and wedge the availability toggle ("can't change
@@ -1235,10 +1253,15 @@
     switch (data.type) {
       case "call-accepted":
         // We (auth) are the caller; guest accepted → create offer
-        if (state !== "calling") return;
-        clearTimeout(callTimeoutTimer);
-        state = "active-call";
-        await startAsInitiator();
+        if (state === "calling") {
+          clearTimeout(callTimeoutTimer);
+          state = "active-call";
+          await startAsInitiator();
+        } else if (state === "incoming") {
+          // Another of our consoles (other tab/browser) answered this call —
+          // stop ringing here and return to ready.
+          await resetToReady();
+        }
         break;
 
       case "call-declined":

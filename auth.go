@@ -1724,6 +1724,7 @@ func (a *authApp) apiMe(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"ref":                info.ref,
+		"userId":             info.user.ID,
 		"username":           info.user.Username,
 		"name":               info.user.Username,
 		"email":              email,

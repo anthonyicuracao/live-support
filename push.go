@@ -289,14 +289,35 @@ func pushUnsubscribeHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// POST /api/call/ring (public, ref-controlled): record a pending invite and push
-// to the target agent's subscriptions. Called by the guest when initiating.
+// userIDForSession resolves which user a presence session belongs to, through
+// either their push subscriptions or their durable-availability record. The
+// guest only knows a session id; everything else about a ring is user-keyed.
+func userIDForSession(db *sql.DB, ref, sessionID string) int64 {
+	if subs := subsForSession(db, ref, sessionID); len(subs) > 0 {
+		return subs[0].userID
+	}
+	var id int64
+	if err := db.QueryRow(
+		`SELECT user_id FROM agent_availability WHERE session_id = ?`, sessionID).Scan(&id); err == nil {
+		return id
+	}
+	return 0
+}
+
+// POST /api/call/ring (public, ref-controlled): user-centric ring fan-out.
+// The guest targets ONE session id (from a roster that may be stale), but the
+// agent is a USER who may have newer tabs, other browsers, or no tab at all.
+// Resolve the user, then alert every surface at once: a WS broadcast to the
+// user-keyed inbox (rings every live console instantly, whichever session ids
+// they have), a pending invite (re-hydrates ringing on console open + the 10s
+// poll), and a Web Push to all their subscriptions (wakes closed browsers).
 func callRingHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	var body struct {
 		Ref        string `json:"ref"`
 		ToSession  string `json:"toSession"`
 		CallID     string `json:"callId"`
+		CallerID   string `json:"callerId"`
 		CallType   string `json:"callType"`
 		CallerName string `json:"callerName"`
 	}
@@ -309,7 +330,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !dbs.exists(body.Ref) {
-		writeJSON(w, 200, map[string]any{"pushed": 0})
+		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
 		return
 	}
 	db, err := dbs.get(body.Ref)
@@ -317,26 +338,21 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, err.Error())
 		return
 	}
-	subs := subsForSession(db, body.Ref, body.ToSession)
-	log.Printf("[Ring] ref=%s to=%s… call=%s… subs=%d",
-		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), len(subs))
-	if len(subs) == 0 {
-		// No push subscription for this agent — instant inbox relay handles it.
-		writeJSON(w, 200, map[string]any{"pushed": 0})
+	userID := userIDForSession(db, body.Ref, body.ToSession)
+	if userID == 0 {
+		// Unknown session (dev sessions, push never enabled) — the guest's own
+		// session-targeted inbox send is the only path.
+		log.Printf("[Ring] ref=%s to=%s… call=%s… no user resolved",
+			body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8))
+		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
 		return
 	}
 	// Durable-availability gate: a Paused or logged-out agent must never be
-	// pushed, even when a guest holds a stale roster naming their session.
-	userID := subs[0].userID
+	// rung, even when a guest holds a stale roster naming their session.
 	if !userIsAvailable(db, userID) {
 		log.Printf("[Ring] dropped: user %d not available", userID)
-		writeJSON(w, 200, map[string]any{"pushed": 0})
+		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
 		return
-	}
-	// Ring every browser this agent enabled push in, not just the targeted
-	// session — the agent answers wherever they see it first.
-	if all := subsForUser(db, body.Ref, userID); len(all) > 0 {
-		subs = all
 	}
 	callType := body.CallType
 	if callType != "video" {
@@ -349,12 +365,26 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 	// Record the invite against the target user so a reopened console finds it.
 	putInvite(pendingInvite{
 		ref:      body.Ref,
-		userID:   subs[0].userID,
+		userID:   userID,
 		callID:   body.CallID,
 		fromName: callerName,
 		callType: callType,
 	})
-	if pushEnabled() {
+	// WS fan-out: ring every live console of this user, regardless of which
+	// session id the guest's roster happened to name.
+	wsPayload, _ := json.Marshal(map[string]any{
+		"type":       "incoming-call",
+		"callId":     body.CallID,
+		"callerId":   body.CallerID,
+		"callerName": callerName,
+		"callType":   callType,
+	})
+	hub.broadcast(userInboxChannel(body.Ref, userID), "message", wsPayload)
+
+	subs := subsForUser(db, body.Ref, userID)
+	log.Printf("[Ring] ref=%s to=%s… call=%s… user=%d subs=%d",
+		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), userID, len(subs))
+	if pushEnabled() && len(subs) > 0 {
 		payload, _ := json.Marshal(map[string]any{
 			"type":       "incoming-call",
 			"ref":        body.Ref,
@@ -370,7 +400,13 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}(subs)
 	}
-	writeJSON(w, 200, map[string]any{"pushed": len(subs)})
+	writeJSON(w, 200, map[string]any{"pushed": len(subs), "queued": true})
+}
+
+// userInboxChannel is the user-keyed inbox: every console of a user subscribes
+// to it (alongside its per-session inbox), so rings reach all their live tabs.
+func userInboxChannel(ref string, userID int64) string {
+	return fmt.Sprintf("inbox:user:%s:%d", ref, userID)
 }
 
 // POST /api/call/ring/clear (public, ref-controlled): drop a pending invite when
