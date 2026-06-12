@@ -19,17 +19,22 @@ Live Support is **fully self-contained**: agents sign in with a built-in usernam
 
 A standalone web page that guests land on when they want to reach a live agent. No login is required. The page is scoped to a specific client/tenant using a `?ref=` parameter in the URL — for example `?ref=example.com`.
 
+- Modern, mobile-first caller modal — a centered card with the brand header; designed to drop into an in-page widget or iframe as well as a full page.
 - Greeting screen with the guest's name, read from the URL.
-- Live agent detection — call buttons appear only when an agent is online. If no agents are available the page goes straight to the message form.
+- Live agent detection — call buttons appear only when an agent is online; the Video button enables only when a video-capable agent is available. If no agents are available the page goes straight to the message form.
 - Audio and video calling — full peer-to-peer WebRTC with optional Cloudflare TURN for NAT traversal.
+- Microphone / camera pickers — choose which input device to use (like Zoom/Meet), persisted per-browser and hot-swappable mid-call via `replaceTrack`.
 - Incoming call support — guests can also receive calls initiated by an agent.
-- Message form — name, email, and message fields. Shown when no agents are online or when a call attempt times out after 10 seconds.
+- Message form — name, email, and message fields. Shown when no agents are online or when a call attempt times out after 30 seconds (long enough for a push-notified agent to answer — see §1.9).
 
 ### 1.2 Agent Dashboard (auth.html)
 
 A separate page for authenticated agents and admins. Access requires a signed-in session — visitors without one are redirected to the sign-in page (`/login`).
 
+- Modern centered hub — a clean, mobile-first card layout. On a desktop viewport the History tables spread to the full width (no horizontal scroll); on mobile / embedded sizes they scroll inside the card. Admins land on the user-management page (`/users`) after signing in; agents land on the console.
 - Session authentication on load — the page asks the server for the signed-in identity (`/api/me`), normalized as `{ ref, name, email, isAdmin }`. The tenant (`ref`) and admin status come from the server-side session, never from URL parameters (except the explicit, server-gated dev bypass). See [§1.7 Authentication](#17-authentication-built-in).
+- Availability toggle — agents start **Paused** and explicitly go **Available** to take calls. Browser microphone/camera permission is **deferred** to that moment, and only for the chosen modes: mic always, camera only when "Accept video calls" is on. Pausing releases the devices.
+- Microphone / camera pickers — pick the input devices to use; the stream acquired at Go-Available is reused by the call (no second permission prompt), and a mid-call device change hot-swaps the track into the live connection.
 - User management (admin only) — admins can open `/users` to invite new users (single-use invite links), issue password-reset links, and deactivate or delete accounts. See §1.7.
 - Live guest list — all guests currently online for this tenant, with a real-time wait-time counter and camera availability indicator.
 - Click-to-call — agents start an audio or video call directly from the guest list.
@@ -83,6 +88,7 @@ Each tenant database contains the app tables plus the auth tables:
 | auth_sessions | Server-side login sessions (hashed tokens at rest). | id (sha256 of token), user_id, csrf_token, expires_at |
 | invites | Single-use invitation links for creating accounts. | token_hash, role, username, created_by, expires_at, redeemed_at |
 | password_resets | One-time, admin-issued password-reset links. | token_hash, user_id, created_by, expires_at, used_at |
+| push_subscriptions | Web Push endpoints for backgrounded-tab call delivery (§1.9). | user_id, session_id, endpoint, p256dh, auth |
 
 ### 1.6 Server
 
@@ -90,7 +96,7 @@ The entire application — web server, database, realtime hub, and frontend — 
 
 - No runtime dependencies — no Node.js, no npm packages, no database server, no external realtime service, and no third-party accounts other than optional Cloudflare TURN.
 - Cross-platform — the binary compiles for Linux, macOS, and Windows from the same source.
-- REST API — sessions, calls, and messages are managed through a small JSON API used by both pages; an `/api/online` endpoint lets external pages check agent availability; `/api/me` reports the signed-in identity and `/api/connect-config` exposes deployment configuration to the frontend.
+- REST API — sessions, calls, and messages are managed through a small JSON API used by both pages; an `/api/online` endpoint lets external pages check agent availability; `/api/me` reports the signed-in identity; `/api/connect-config` exposes deployment configuration (including the Web Push public key) to the frontend; and the Web Push endpoints (§1.9) deliver calls to backgrounded agents.
 
 ### 1.7 Authentication (Built-In)
 
@@ -146,6 +152,19 @@ The visibility model is deliberately asymmetric:
 
 This asymmetry is enforced by the transport itself: a chat message is delivered to the recipient's own inbox channel (keyed by their session id), so a guest only ever learns an agent's address because that agent messaged them — the guest is never sent the agent roster and cannot enumerate or cold-message agents.
 
+### 1.9 Web Push (backgrounded-browser call delivery)
+
+A WebSocket can't ring an agent whose console tab is backgrounded, minimised, or closed — browsers throttle and suspend background tabs. **Web Push** closes that gap: when an agent goes Available the console subscribes to push (VAPID); when a guest calls, the server sends an encrypted push that **wakes the agent's service worker** and rings them with an OS notification even when no tab is in front. Clicking the notification focuses (or re-opens) the console, which re-hydrates the still-ringing call from a short-lived pending-invite lookup so the agent can answer.
+
+Push is **additive**: the in-process inbox-over-WebSocket relay stays the instant path when the tab is open; push is the fallback when it isn't. With no VAPID keys configured, or notification permission not granted, the app behaves exactly as before. Mechanics:
+
+- **VAPID** — set `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (+ optional `VAPID_SUBJECT`); generate a keypair with `live-support -genvapid`. The public key is exposed to the client via `/api/connect-config`; the private key never leaves the server.
+- **Service worker + PWA** — `static/sw.js` (scope `/`) shows the notification and handles the click; `manifest.webmanifest` makes the console installable.
+- **Subscriptions** — stored per-tenant in `push_subscriptions`, tied to the authenticated user; dead endpoints (HTTP 404/410) are pruned automatically.
+- **Endpoints** — `POST /api/push/{subscribe,unsubscribe}` (authenticated), `POST /api/call/ring` + `/api/call/ring/clear` (called by the guest on ring/cancel), `GET /api/call/pending` (the console's re-hydration check).
+
+> This desktop/PWA tier covers a backgrounded or closed *browser*. A fully asleep phone still needs a native app with APNs/FCM — a later phase that the push model here de-risks.
+
 ## 2. Deployment
 
 Deployment is a copy-and-run operation: build (or download) the binary, place it on any host, and start it. A $5/month VPS, an on-premise machine, or a container platform all work — anything that can run a single Linux process.
@@ -182,6 +201,9 @@ All settings come from environment variables or a `.env` file beside the binary.
 | `DEV_MODE` | `false` | Enables the agent-dashboard dev bypass (`?dev=true`). Never enable in production. |
 | `CLOUDFLARE_TURN_TOKEN_ID` | *(empty)* | Optional Cloudflare TURN token ID. Without TURN credentials the app falls back to public STUN servers. |
 | `CLOUDFLARE_API_TOKEN` | *(empty)* | Optional Cloudflare API token for TURN credential generation. |
+| `VAPID_PUBLIC_KEY` | *(empty)* | Web Push public key (§1.9). Set together with `VAPID_PRIVATE_KEY` to enable push; both empty disables it. Generate a keypair with `live-support -genvapid`. |
+| `VAPID_PRIVATE_KEY` | *(empty)* | Web Push private key — signs push requests; never sent to the browser. |
+| `VAPID_SUBJECT` | `mailto:admin@localhost` | Contact (`mailto:`) included in push requests, per the Web Push spec. |
 
 ### 2.2 Install (Linux, one line)
 
@@ -280,7 +302,13 @@ No changes to the guest page itself are required — it is ready to receive thes
 | Audio and video calling (WebRTC + optional Cloudflare TURN) | ✓ Done | Complete. |
 | Instant messaging (agent ↔ guest text chat) | ✓ Done | Ephemeral, over inbox channels. Agents initiate and see the full roster; guests can only reply. |
 | Real-time presence and signaling (built-in WebSocket hub) | ✓ Done | Complete. |
-| Database — embedded SQLite, multi-tenant | ✓ Done | One database file per tenant (ref) in `data/`, created automatically. Three tables per tenant. |
+| Web Push — backgrounded/closed-tab call delivery (§1.9) | ✓ Done | VAPID + service worker + PWA; pending-invite re-hydration on reopen. Falls back to the WS path when push is off. |
+| Media UX — caller modal, Available/Pause, mic/camera pickers, mid-call switch | ✓ Done | Deferred, mode-aware permission; stream reuse (no re-prompt on accept); device pickers on both pages. |
+| Database — embedded SQLite, multi-tenant | ✓ Done | One database file per tenant (ref) in `data/`, created automatically. App + auth tables per tenant (see §1.5). |
 | Go server — single binary, embedded frontend, TURN proxy | ✓ Done | Complete. |
 | Guest-page link from a chatbot/site | Integration | Link to `/?ref=<tenant>` from wherever guests start. |
+
+## License
+
+MIT — see [LICENSE](LICENSE). © 2026 Ron Pinkas and Anthony Elshafei.
 
