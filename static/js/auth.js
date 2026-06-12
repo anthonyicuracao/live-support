@@ -226,15 +226,11 @@
     greeting.appendChild(bar);
   })();
 
-  // ─── Guard: no microphone ──────────────────────────────────────────────
-  const perms = await S.checkMediaPermissions();
-  if (!perms.hasMic) {
-    appendGreetingMessage(
-      "Microphone access is required to use this service. Please allow microphone access and refresh the page.",
-      "alert"
-    );
-    return;
-  }
+  // ─── Media permissions are deferred to "Go Available" ─────────────────
+  // We no longer prompt for camera/mic on page load. `perms` is filled in when
+  // the agent goes Available (requesting ONLY the modes they picked); until then
+  // the agent is Paused and not callable, so nothing needs media access yet.
+  let perms = { hasMic: false, hasCamera: false };
 
   // ─── Session setup ─────────────────────────────────────────────────────
   // Reuse the session ID across page refreshes so the auth user's presence
@@ -252,10 +248,11 @@
   function loadAvailability() {
     try {
       const v = localStorage.getItem(STORAGE_AVAILABLE);
-      // Default to available on first load.
-      return v === null ? true : v === "true";
+      // Default to PAUSED on first load — the agent explicitly goes Available,
+      // which is the moment camera/mic permission is requested.
+      return v === null ? false : v === "true";
     } catch (e) {
-      return true; // localStorage unavailable (private mode, etc.)
+      return false; // localStorage unavailable (private mode, etc.)
     }
   }
   function saveAvailability(on) {
@@ -268,6 +265,38 @@
   let isAvailable = loadAvailability();
   function availabilityStatus() {
     return isAvailable ? "available" : "offline";
+  }
+
+  // ─── Video-mode preference + deferred media acquisition ────────────────
+  // The agent picks whether they'll take video calls BEFORE going available;
+  // permission is requested only at Go-Available, for only the picked modes.
+  const STORAGE_VIDEO = "auth-user-video";
+  function loadVideoPref() {
+    try { return localStorage.getItem(STORAGE_VIDEO) === "true"; } catch (e) { return false; }
+  }
+  function saveVideoPref(on) { try { localStorage.setItem(STORAGE_VIDEO, String(on)); } catch (e) {} }
+  let wantsVideo = loadVideoPref();
+
+  // Request mic (+ camera if wantVideo) right now; return what was granted and
+  // release the probe tracks (the actual call re-acquires). Falls back to
+  // audio-only if video was requested but blocked.
+  async function acquireMedia(wantVideo) {
+    const result = { hasMic: false, hasCamera: false };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: !!wantVideo });
+      result.hasMic = stream.getAudioTracks().length > 0;
+      result.hasCamera = stream.getVideoTracks().length > 0;
+      stream.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      if (wantVideo) {
+        try {
+          const s2 = await navigator.mediaDevices.getUserMedia({ audio: true });
+          result.hasMic = s2.getAudioTracks().length > 0;
+          s2.getTracks().forEach((t) => t.stop());
+        } catch (e2) { /* no mic either */ }
+      }
+    }
+    return result;
   }
 
   // ─── Display name (public alias shown to guests) ───────────────────────
@@ -366,7 +395,22 @@
         showAlert("You can't change availability during a call.");
         return;
       }
-      isAvailable = availabilityInput.checked;
+      const goingAvailable = availabilityInput.checked;
+      if (goingAvailable) {
+        // Request permission NOW, for only the picked modes (mic always, camera
+        // only if Video is on). No mic -> can't go Available.
+        const got = await acquireMedia(wantsVideo);
+        if (!got.hasMic) {
+          availabilityInput.checked = false;
+          showAlert("Microphone access is required to receive calls. Please allow it and try Go Available again.");
+          return;
+        }
+        perms = got;
+        presenceData.has_camera = perms.hasCamera;
+        presenceData.has_mic = perms.hasMic;
+        await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic);
+      }
+      isAvailable = goingAvailable;
       saveAvailability(isAvailable);
       renderAvailabilityUI();
       const status = availabilityStatus();
