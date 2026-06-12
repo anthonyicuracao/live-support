@@ -84,6 +84,36 @@ body.guest {
 }
 .guest-user .send-message-form-buttons { display: flex; gap: 10px; margin-top: 4px; }
 
+/* Device pickers (mic/camera) — two compact dropdowns under the call buttons. */
+.guest-user .device-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 14px 0 2px;
+  text-align: left;
+}
+.guest-user .device-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+.guest-user .device-pick select {
+  font: inherit;
+  font-weight: 400;
+  color: #0f172a;
+  padding: 9px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  max-width: 100%;
+}
+@media (max-width: 480px) {
+  .guest-user .device-pickers { grid-template-columns: 1fr; }
+}
+
 /* Active call: break out of the card to a full-screen overlay. */
 .guest-user .call-active {
   position: fixed; inset: 0; z-index: 1100; margin: 0;

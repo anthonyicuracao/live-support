@@ -414,6 +414,56 @@ window.Shared = (() => {
     // Keep the element so it stays primed for the next call.
   }
 
+  // ─── Desktop notifications (backgrounded-tab fallback for the ring) ────────
+  // A hidden/blurred tab throttles audio, so the ring may not be heard until
+  // the tab is focused. Request permission on a user gesture (Go-Available),
+  // then raise an OS notification when a call arrives while the tab is hidden.
+  function requestNotifyPermission() {
+    try {
+      if ("Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission().catch(() => {});
+      }
+    } catch (e) {}
+  }
+
+  let activeCallNotification = null;
+  function notifyIncomingCall(title, body) {
+    try {
+      if (!("Notification" in window) || Notification.permission !== "granted") return;
+      // Only nag when the tab isn't already in front of the user.
+      if (!document.hidden && document.hasFocus()) return;
+      activeCallNotification = new Notification(title, {
+        body,
+        icon: "/public/favicon.svg",
+        tag: "incoming-call",
+        renotify: true,
+        requireInteraction: true,
+      });
+      activeCallNotification.onclick = () => {
+        try { window.focus(); } catch (e) {}
+        if (activeCallNotification) activeCallNotification.close();
+      };
+    } catch (e) {}
+  }
+  function clearIncomingNotification() {
+    try { if (activeCallNotification) { activeCallNotification.close(); activeCallNotification = null; } } catch (e) {}
+  }
+
+  // ─── Device enumeration (mic/camera pickers) ──────────────────────────────
+  // Device labels are only exposed once a media permission has been granted,
+  // and enumerateDevices() can briefly return blank labels right after the
+  // grant. listInputDevices() returns the current list; callers should re-run
+  // it on a short retry and on `devicechange` (see populateDevices in the page
+  // scripts) so the names fill in reliably.
+  async function listInputDevices() {
+    let devices = [];
+    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return { mics: [], cams: [] }; }
+    return {
+      mics: devices.filter((d) => d.kind === "audioinput"),
+      cams: devices.filter((d) => d.kind === "videoinput"),
+    };
+  }
+
   // ─── Time Formatting ──────────────────────────────────────────────────────
   function formatWaitTime(isoString) {
     const ms = Date.now() - new Date(isoString).getTime();
@@ -474,6 +524,10 @@ window.Shared = (() => {
     primeRingtone,
     playRingtone,
     stopRingtone,
+    requestNotifyPermission,
+    notifyIncomingCall,
+    clearIncomingNotification,
+    listInputDevices,
     formatWaitTime,
     formatDuration,
     showSection,

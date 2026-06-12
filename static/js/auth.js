@@ -412,14 +412,14 @@
   }
 
   // ─── Device pickers (mic / camera), like Zoom/Meet ─────────────────────
-  // Device labels are only exposed by enumerateDevices() AFTER a media
-  // permission has been granted, so we populate once on load (ids, maybe no
-  // labels) and again after Go-Available (with labels). Changing a device
-  // while Available re-acquires the live stream on the new device.
+  // Labels are exposed only after a media permission is granted, and
+  // enumerateDevices() can briefly return blank labels right after the grant —
+  // so we re-run on a short retry (populateDevicesSoon) and on `devicechange`.
   const micSelect = document.getElementById("mic-select");
   const camSelect = document.getElementById("cam-select");
   function fillDeviceSelect(sel, devices, currentId, label) {
     if (!sel) return;
+    const prev = sel.value;
     sel.innerHTML = "";
     const def = document.createElement("option");
     def.value = ""; def.textContent = `Default ${label.toLowerCase()}`;
@@ -430,38 +430,58 @@
       o.textContent = d.label || `${label} ${i + 1}`;
       sel.appendChild(o);
     });
-    // Keep the persisted choice selected if it's still present.
-    sel.value = devices.some((d) => d.deviceId === currentId) ? currentId : "";
+    const want = currentId || prev;
+    sel.value = devices.some((d) => d.deviceId === want) ? want : "";
   }
   async function populateDevices() {
     if (!micSelect && !camSelect) return;
-    let devices = [];
-    try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return; }
-    fillDeviceSelect(micSelect, devices.filter((d) => d.kind === "audioinput"), selectedMicId, "Microphone");
-    fillDeviceSelect(camSelect, devices.filter((d) => d.kind === "videoinput"), selectedCamId, "Camera");
+    const { mics, cams } = await S.listInputDevices();
+    fillDeviceSelect(micSelect, mics, selectedMicId, "Microphone");
+    fillDeviceSelect(camSelect, cams, selectedCamId, "Camera");
+  }
+  // Re-run a few times so device names fill in reliably after a grant.
+  function populateDevicesSoon() {
+    populateDevices();
+    setTimeout(populateDevices, 400);
+    setTimeout(populateDevices, 1200);
+  }
+  // Apply a newly-picked device: re-acquire the live stream and, if a call is
+  // already in progress, hot-swap the track into the peer connection via
+  // replaceTrack (no re-prompt, no dropped call).
+  async function applyDeviceChange() {
+    if (!isAvailable) return; // nothing live to update yet
+    const got = await acquireMedia(wantsVideo);
+    if (!got.hasMic) return;
+    perms = got;
+    if (peerConnection && liveStream) {
+      const senders = peerConnection.getSenders();
+      const aTrack = liveStream.getAudioTracks()[0];
+      const vTrack = liveStream.getVideoTracks()[0];
+      const aSender = senders.find((s) => s.track && s.track.kind === "audio");
+      const vSender = senders.find((s) => s.track && s.track.kind === "video");
+      try { if (aTrack && aSender) await aSender.replaceTrack(aTrack); } catch (e) {}
+      try { if (vTrack && vSender) await vSender.replaceTrack(vTrack); } catch (e) {}
+      localStream = liveStream; // keep endCall/preview bookkeeping consistent
+      const lv = document.querySelector(".call-active .local-video");
+      if (lv && vTrack) lv.srcObject = liveStream;
+    }
+    await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic);
   }
   if (micSelect) {
     micSelect.addEventListener("change", async () => {
       selectedMicId = micSelect.value;
       try { localStorage.setItem(STORAGE_MIC, selectedMicId); } catch (e) {}
-      // Re-acquire on the new mic if we're holding a live stream.
-      if (isAvailable) {
-        const got = await acquireMedia(wantsVideo);
-        if (got.hasMic) { perms = got; await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic); }
-      }
+      await applyDeviceChange();
     });
   }
   if (camSelect) {
     camSelect.addEventListener("change", async () => {
       selectedCamId = camSelect.value;
       try { localStorage.setItem(STORAGE_CAM, selectedCamId); } catch (e) {}
-      if (isAvailable && wantsVideo) {
-        const got = await acquireMedia(wantsVideo);
-        if (got.hasMic) { perms = got; await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic); }
-      }
+      await applyDeviceChange();
     });
   }
-  populateDevices();
+  populateDevicesSoon();
   // Refresh the list (and labels) if devices are plugged/unplugged.
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener("devicechange", populateDevices);
@@ -481,8 +501,10 @@
       const goingAvailable = availabilityInput.checked;
       if (goingAvailable) {
         // This is a user gesture — unlock audio so the ring can sound when a call
-        // later arrives asynchronously.
+        // later arrives asynchronously, and ask for notification permission so a
+        // backgrounded tab can still alert on an incoming call.
         S.primeRingtone();
+        S.requestNotifyPermission();
         // Request permission NOW, for only the picked modes (mic always, camera
         // only if Video is on). No mic -> can't go Available.
         const got = await acquireMedia(wantsVideo);
@@ -495,8 +517,9 @@
         presenceData.has_camera = perms.hasCamera;
         presenceData.has_mic = perms.hasMic;
         await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic);
-        // Permission just granted — re-enumerate so the pickers show real labels.
-        populateDevices();
+        // Permission just granted — re-enumerate (with retry) so the pickers
+        // show real device names.
+        populateDevicesSoon();
       } else if (liveStream) {
         // Going Paused: release the camera/mic so the device indicator clears.
         liveStream.getTracks().forEach((t) => t.stop());
@@ -896,6 +919,9 @@
     S.playRingtone();
 
     const callType = data.callType === "video" ? "video" : "audio";
+    // Backgrounded tabs throttle audio — also raise an OS notification so the
+    // agent doesn't miss the call while the tab is hidden.
+    S.notifyIncomingCall("Incoming call", `${callType} call from ${data.callerName}`);
     const incH1 = document.querySelector(".call-incoming h1");
     if (incH1)
       incH1.textContent = `Incoming ${callType} call from ${data.callerName}...`;
@@ -909,6 +935,7 @@
   document.querySelector(".accept-call-button").addEventListener("click", async () => {
     if (state !== "incoming") return;
     S.stopRingtone();
+    S.clearIncomingNotification();
     S.hideSection(".call-incoming");
 
     presenceData.status = "in-call";
@@ -924,6 +951,7 @@
   document.querySelector(".decline-call-button").addEventListener("click", async () => {
     if (state !== "incoming") return;
     S.stopRingtone();
+    S.clearIncomingNotification();
     S.hideSection(".call-incoming");
     await S.sendCallSignal(currentCallChannel, { type: "call-declined" });
     await S.updateCallRecord(currentCallId, { status: "declined" });
@@ -1172,6 +1200,8 @@
 
   // ─── Reset to ready state ──────────────────────────────────────────────
   async function resetToReady() {
+    S.stopRingtone();
+    S.clearIncomingNotification();
     state = "ready";
     callRole = null;
     outgoingCall = null;

@@ -70,6 +70,15 @@
           </li>
         </ul>
         <p class="guest-video-hint">Video isn't available right now — no video-capable agent is online.</p>
+        <!-- Device pickers (like Zoom/Meet) — choose which mic/camera to use. -->
+        <div class="device-pickers">
+          <label class="device-pick">Microphone
+            <select id="mic-select"><option value="">Default</option></select>
+          </label>
+          <label class="device-pick">Camera
+            <select id="cam-select"><option value="">Default</option></select>
+          </label>
+        </div>
       </section>
 
       <!-- Instant Messaging (guest view: appears only when an agent messages

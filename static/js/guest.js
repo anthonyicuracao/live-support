@@ -95,6 +95,15 @@
   let inboxChannel = null;
   let authUsers = []; // Available auth users with same ref
 
+  // Picked mic/camera (deviceIds), persisted per-browser. Used as getUserMedia
+  // constraints and hot-swapped into an active call via replaceTrack.
+  const STORAGE_MIC = "guest-mic";
+  const STORAGE_CAM = "guest-cam";
+  let selectedMicId = "";
+  let selectedCamId = "";
+  try { selectedMicId = localStorage.getItem(STORAGE_MIC) || ""; } catch (e) {}
+  try { selectedCamId = localStorage.getItem(STORAGE_CAM) || ""; } catch (e) {}
+
   // ─── Presence ──────────────────────────────────────────────────────────
   presenceChannel = S.joinPresenceChannel(params.ref, presenceData, (users) => {
     // Only track auth users with same ref who are available and have mic
@@ -103,6 +112,88 @@
     );
     if (state === "ready") updateCallButtons();
   });
+
+  // ─── Device pickers (mic / camera), like Zoom/Meet ─────────────────────
+  // The guest is granted mic/camera at load (checkMediaPermissions), so device
+  // names are available immediately; we still retry + listen for devicechange.
+  const micSelect = document.getElementById("mic-select");
+  const camSelect = document.getElementById("cam-select");
+  function fillDeviceSelect(sel, devices, currentId, label) {
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = "";
+    const def = document.createElement("option");
+    def.value = ""; def.textContent = `Default ${label.toLowerCase()}`;
+    sel.appendChild(def);
+    devices.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || `${label} ${i + 1}`;
+      sel.appendChild(o);
+    });
+    const want = currentId || prev;
+    sel.value = devices.some((d) => d.deviceId === want) ? want : "";
+  }
+  async function populateDevices() {
+    if (!micSelect && !camSelect) return;
+    const { mics, cams } = await S.listInputDevices();
+    fillDeviceSelect(micSelect, mics, selectedMicId, "Microphone");
+    fillDeviceSelect(camSelect, cams, selectedCamId, "Camera");
+  }
+  function populateDevicesSoon() {
+    populateDevices();
+    setTimeout(populateDevices, 400);
+    setTimeout(populateDevices, 1200);
+  }
+  // If a call is live, hot-swap the picked device into the peer connection.
+  async function hotSwapDevice(kind) {
+    if (!peerConnection) return;
+    try {
+      const constraints =
+        kind === "mic"
+          ? { audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true }
+          : { video: selectedCamId ? { deviceId: { exact: selectedCamId } } : true };
+      const fresh = await navigator.mediaDevices.getUserMedia(constraints);
+      const track = kind === "mic" ? fresh.getAudioTracks()[0] : fresh.getVideoTracks()[0];
+      if (!track) return;
+      const sender = peerConnection.getSenders().find((s) => s.track && s.track.kind === (kind === "mic" ? "audio" : "video"));
+      if (sender) {
+        const old = sender.track;
+        await sender.replaceTrack(track);
+        if (old) old.stop();
+        if (localStream) {
+          if (old) localStream.removeTrack(old);
+          localStream.addTrack(track);
+        }
+        if (kind === "cam") {
+          const lv = document.querySelector(".call-active .local-video");
+          if (lv) lv.srcObject = localStream;
+        }
+      } else {
+        track.stop();
+      }
+    } catch (e) {
+      console.warn("[Media] device hot-swap failed:", e.message);
+    }
+  }
+  if (micSelect) {
+    micSelect.addEventListener("change", async () => {
+      selectedMicId = micSelect.value;
+      try { localStorage.setItem(STORAGE_MIC, selectedMicId); } catch (e) {}
+      await hotSwapDevice("mic");
+    });
+  }
+  if (camSelect) {
+    camSelect.addEventListener("change", async () => {
+      selectedCamId = camSelect.value;
+      try { localStorage.setItem(STORAGE_CAM, selectedCamId); } catch (e) {}
+      await hotSwapDevice("cam");
+    });
+  }
+  populateDevicesSoon();
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", populateDevices);
+  }
 
   // ─── Inbox ─────────────────────────────────────────────────────────────
   inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);
@@ -480,10 +571,10 @@
   // ─── Get media stream ──────────────────────────────────────────────────
   async function getMediaStream(callType) {
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: callType === "video" && perms.hasCamera,
-      });
+      const audio = selectedMicId ? { deviceId: { exact: selectedMicId } } : true;
+      const video = callType === "video" && perms.hasCamera
+        ? (selectedCamId ? { deviceId: { exact: selectedCamId } } : true) : false;
+      return await navigator.mediaDevices.getUserMedia({ audio, video });
     } catch (e) {
       console.error("[Media] getUserMedia error:", e.message);
       return null;
