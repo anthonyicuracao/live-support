@@ -438,6 +438,13 @@
     await resetToReady();
   });
 
+  // Unlock ring audio at the first interaction of any kind, so an agent
+  // calling a guest who hasn't clicked anything yet still rings audibly
+  // (browsers block audio that wasn't unlocked by a user gesture).
+  const primeOnFirstGesture = () => S.primeRingtone();
+  window.addEventListener("pointerdown", primeOnFirstGesture, { once: true });
+  window.addEventListener("keydown", primeOnFirstGesture, { once: true });
+
   // ─── Handle inbox messages (incoming calls from auth) ──────────────────
   function handleInboxMessage(data) {
     if (data.type === "im") {

@@ -419,12 +419,21 @@ window.Shared = (() => {
       });
   }
 
+  // Resolves true when the ring is audibly playing, false when the browser
+  // blocked it (no user gesture yet — e.g. a console that resumed Available on
+  // load). Callers use false to escalate to an OS notification instead.
   function playRingtone() {
     const a = ensureRingtone();
     a.muted = false;
     a.volume = 1;
     a.currentTime = 0;
-    a.play().catch((e) => console.warn("[Ringtone] Play failed:", e.message));
+    return a.play().then(
+      () => true,
+      (e) => {
+        console.warn("[Ringtone] Play failed:", e.message);
+        return false;
+      }
+    );
   }
 
   function stopRingtone() {
@@ -467,6 +476,19 @@ window.Shared = (() => {
   }
   function clearIncomingNotification() {
     try { if (activeCallNotification) { activeCallNotification.close(); activeCallNotification = null; } } catch (e) {}
+    // Also close any "incoming-call" notifications raised through the service
+    // worker (by a push, or by the page's silent-ring escalation), so a call
+    // answered here doesn't leave a stale banner behind.
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+        navigator.serviceWorker.getRegistration().then((reg) => {
+          if (!reg || !reg.getNotifications) return;
+          reg.getNotifications({ tag: "incoming-call" }).then((list) => {
+            list.forEach((n) => n.close());
+          });
+        }).catch(() => {});
+      }
+    } catch (e) {}
   }
 
   // ─── Device enumeration (mic/camera pickers) ──────────────────────────────

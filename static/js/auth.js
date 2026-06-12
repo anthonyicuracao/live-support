@@ -826,6 +826,13 @@
   // rung, and re-hydrate any call still ringing for us when the page (re)gains
   // focus — e.g. right after the agent clicks a push notification.
   if (window.Push) Push.registerServiceWorker();
+  // Unlock ring audio at the first interaction of ANY kind. A console that
+  // resumed Available on load has had no user gesture, and Safari refuses to
+  // play un-unlocked audio — so the first click/keypress anywhere primes the
+  // ringtone, making every later ring audible.
+  const primeOnFirstGesture = () => S.primeRingtone();
+  window.addEventListener("pointerdown", primeOnFirstGesture, { once: true });
+  window.addEventListener("keydown", primeOnFirstGesture, { once: true });
   checkPendingInvites();
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) checkPendingInvites();
@@ -1098,9 +1105,16 @@
     currentCallId = data.callId;
 
     currentCallChannel = S.setupCallChannel(currentCallId, handleCallSignal);
-    S.playRingtone();
 
     const callType = data.callType === "video" ? "video" : "audio";
+    // Ring — and if the browser blocks the audio (a console that resumed
+    // Available on load has had no gesture yet, so Safari refuses to play),
+    // escalate to an OS notification via the service worker, which carries the
+    // system sound even when the tab is focused. Without this a re-hydrated
+    // call is completely silent: just an Accept button waiting to be noticed.
+    Promise.resolve(S.playRingtone()).then((rang) => {
+      if (!rang) notifyViaServiceWorker(callType, data.callerName);
+    });
     // Backgrounded tabs throttle audio — also raise an OS notification so the
     // agent doesn't miss the call while the tab is hidden.
     S.notifyIncomingCall("Incoming call", `${callType} call from ${data.callerName}`);
@@ -1123,6 +1137,26 @@
         showAlert(`Missed call from ${data.callerName || "a guest"}.`);
       }
     }, 35000);
+  }
+
+  // OS notification raised from the page through the service worker — unlike
+  // `new Notification(...)` this also works as the audible fallback when the
+  // in-page ringtone is blocked (and is closed by clearIncomingNotification).
+  async function notifyViaServiceWorker(callType, callerName) {
+    try {
+      if (!window.Push || !("Notification" in window) || Notification.permission !== "granted") return;
+      const reg = await Push.registerServiceWorker();
+      if (!reg) return;
+      await reg.showNotification("Incoming call", {
+        body: `${callType} call from ${callerName || "a guest"}`,
+        icon: "/public/favicon.svg",
+        tag: "incoming-call",
+        renotify: true,
+        requireInteraction: true,
+      });
+    } catch (e) {
+      /* best effort */
+    }
   }
 
   // After a push notification wakes/focuses the console, re-hydrate any call

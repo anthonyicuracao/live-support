@@ -203,7 +203,16 @@ func sendWebPush(db *sql.DB, s pushSub, payload []byte) {
 	defer resp.Body.Close()
 	// 404/410 mean the subscription is gone — prune it so we stop trying.
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		log.Printf("[Push] pruning dead endpoint (%d): %s…", resp.StatusCode, safePrefix(s.endpoint, 40))
 		deleteSubscription(db, s.endpoint)
+		return
+	}
+	// Anything else non-2xx is a rejection we must SEE (Apple in particular
+	// rejects with 400/403 on VAPID problems, which used to vanish silently).
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		body := make([]byte, 256)
+		n, _ := resp.Body.Read(body)
+		log.Printf("[Push] rejected %d by %s…: %s", resp.StatusCode, safePrefix(s.endpoint, 40), string(body[:n]))
 	}
 }
 
