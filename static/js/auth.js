@@ -931,9 +931,13 @@
                 icon: "/public/favicon.svg",
                 tag: "push-test",
               });
+            } else {
+              // enablePush just returned "armed", so a registration should
+              // exist — reaching here means the SW vanished in between.
+              console.warn("[Push] armed but no service worker registration — test notification skipped");
             }
           } catch (e) {
-            /* the status line still reflects armed */
+            console.warn("[Push] test notification failed:", e.message);
           }
         }
       } else {
