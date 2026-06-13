@@ -152,9 +152,9 @@ body {
 .settings-gear {
   background: #f1f5f9;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  width: 40px;
-  height: 40px;
+  border-radius: 12px;
+  width: 52px;
+  height: 52px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -162,7 +162,7 @@ body {
   cursor: pointer;
   transition: transform 0.25s ease, background 0.2s;
 }
-.settings-gear svg { width: 20px; height: 20px; }
+.settings-gear svg { width: 30px; height: 30px; }
 .settings-gear:hover { background: #e2e8f0; }
 .settings-gear--open { transform: rotate(90deg); background: #e0e7ff; color: #4338ca; }
 .settings-panel {

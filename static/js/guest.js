@@ -26,10 +26,22 @@
   }
 
   // ─── Guard: no microphone ──────────────────────────────────────────────
-  const perms = await S.checkMediaPermissions();
+  // Detect device EXISTENCE only (enumerateDevices needs no permission) — a
+  // visitor who merely opened the page must not get a scary mic prompt.
+  // Permission is requested from the call click itself (a user gesture), and
+  // that stream is REUSED by the call, so the guest is prompted exactly once,
+  // at the moment it makes sense.
+  const perms = { hasMic: false, hasCamera: false };
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    perms.hasMic = devices.some((d) => d.kind === "audioinput");
+    perms.hasCamera = devices.some((d) => d.kind === "videoinput");
+  } catch (e) {
+    console.warn("[Media] enumerateDevices failed:", e.message);
+  }
   if (!perms.hasMic) {
     appendGreetingMessage(
-      "Microphone access is required to use this service. Please allow microphone access and refresh the page.",
+      "A microphone is required to use this service. Please connect one and refresh the page.",
       "alert"
     );
     return;
@@ -325,6 +337,18 @@
   // ─── Initiate call (guest → auth) ──────────────────────────────────────
   async function initiateCall(targetSessionId, targetName, callType, targetPicture) {
     if (state !== "ready") return;
+
+    // Acquire the mic (and camera for video) NOW, from this click's gesture —
+    // the only permission prompt the guest ever sees, at the moment it makes
+    // sense — with a friendly explainer first (permission priming). The
+    // stream is held and reused when the agent answers, so there is no second
+    // prompt mid-connection.
+    if (!(await primeMicPermission(callType))) return; // guest chose Cancel
+    const stream = await getMediaStream(callType);
+    if (!stream) {
+      showAlert("Microphone access is required to place a call. Please allow it and try again.");
+      return;
+    }
 
     state = "calling";
     callRole = "caller";
@@ -668,7 +692,33 @@
   }
 
   // ─── Get media stream ──────────────────────────────────────────────────
+  // The stream acquired at the call click is held here and reused when the
+  // call connects — the guest is never re-prompted mid-connection.
+  let heldStream = null;
+
+  // Permission priming: before the browser's cold "use your microphone?"
+  // dialog, show our own explainer with an OK — it raises grant rates and, if
+  // the guest cancels OUR modal, the browser permission is never burned (it
+  // stays askable next time). Skipped when permission is already granted.
+  async function primeMicPermission(callType) {
+    if (!window.commandBox) return true; // lib missing — straight to the prompt
+    try {
+      const q = await navigator.permissions.query({ name: "microphone" });
+      if (q.state === "granted") return true;
+    } catch (e) {
+      /* query unsupported (older Safari) — show the primer anyway */
+    }
+    const what = callType === "video" ? "microphone and camera" : "microphone";
+    const ans = await commandBox(
+      `To connect your call, your browser will ask permission to use your ${what}. Please choose Allow when asked.`,
+      ["&Ok", "&Cancel"], 1, "INFO");
+    return ans === "O";
+  }
+
   async function getMediaStream(callType) {
+    if (heldStream && (callType !== "video" || heldStream.getVideoTracks().length > 0)) {
+      return heldStream;
+    }
     // Try the saved device picks first, then fall back to defaults — a stale
     // pick (device unplugged, or its id rotated by the browser) must never
     // kill the call.
@@ -685,13 +735,25 @@
     }
     for (const c of attempts) {
       try {
-        return await navigator.mediaDevices.getUserMedia(c);
+        heldStream = await navigator.mediaDevices.getUserMedia(c);
+        // First grant exposes device labels — refresh the pickers.
+        populateDevicesSoon();
+        return heldStream;
       } catch (e) {
         /* try the next, less specific constraint set */
       }
     }
     console.error("[Media] getUserMedia failed for every constraint set");
     return null;
+  }
+
+  // Release the held stream (call over or never connected) so the browser's
+  // recording indicator turns off.
+  function releaseHeldStream() {
+    if (heldStream) {
+      heldStream.getTracks().forEach((t) => t.stop());
+      heldStream = null;
+    }
   }
 
   // ─── Show active call UI ───────────────────────────────────────────────
@@ -749,6 +811,7 @@
       localStream.getTracks().forEach((t) => t.stop());
       localStream = null;
     }
+    releaseHeldStream();
 
     const remoteVideo = document.querySelector(".call-active .remote-video");
     if (remoteVideo) remoteVideo.srcObject = null;
@@ -770,6 +833,10 @@
   // ─── Reset to ready state ──────────────────────────────────────────────
   async function resetToReady() {
     state = "ready";
+    // A call that never connected (cancelled, declined, timed out) must not
+    // keep the mic open — release the held stream so the recording indicator
+    // turns off.
+    releaseHeldStream();
     callRole = null;
     outgoingCall = null;
     incomingCall = null;
