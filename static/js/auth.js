@@ -192,9 +192,27 @@
   // Rendered only for real server sessions; the dev bypass has nothing to
   // sign out of. "Manage users" links to the per-tenant user-management page
   // (admins only). Sign-out posts the per-session CSRF token from /api/me.
+  // Settings gear: everything that isn't moment-to-moment hides behind it.
+  (function wireSettingsGear() {
+    const gear = document.getElementById("settings-toggle");
+    const panel = document.getElementById("settings-panel");
+    if (!gear || !panel) {
+      console.warn("[UI] settings gear/panel missing — settings stay inline");
+      return;
+    }
+    gear.addEventListener("click", () => {
+      const open = panel.style.display !== "none";
+      panel.style.display = open ? "none" : "";
+      gear.setAttribute("aria-expanded", String(!open));
+      gear.classList.toggle("settings-gear--open", !open);
+    });
+  })();
+
   (function renderAccountBar() {
     if (!me) return;
-    const greeting = document.querySelector(".greeting");
+    // The account links live inside the settings panel (fall back to the
+    // greeting card if the panel is missing).
+    const greeting = document.getElementById("settings-panel") || document.querySelector(".greeting");
     if (!greeting) return;
     const bar = document.createElement("div");
     bar.className = "account-bar";
@@ -739,6 +757,18 @@
     subscribeToLogChanges(ref);
 
     // ─── Admin: Delete All buttons ────────────────────────────────────────
+    // Destructive confirmations go through commandBox (consistent modal
+    // language); fall back to the native confirm if the lib didn't load.
+    async function confirmDelete(what) {
+      if (window.commandBox) {
+        const ans = await commandBox(
+          `Delete all ${what} for this ref? This cannot be undone.`,
+          ["&Delete", "&Cancel"], 2, "EXCLAMATION");
+        return ans === "D";
+      }
+      return confirm(`Delete all ${what} for this ref? This cannot be undone.`);
+    }
+
     const deleteAllCalls = document.getElementById("delete-all-calls");
     const deleteAllMessages = document.getElementById("delete-all-messages");
     const deleteAllSessions = document.getElementById("delete-all-sessions");
@@ -746,7 +776,7 @@
     if (deleteAllCalls) {
       deleteAllCalls.style.display = "";
       deleteAllCalls.addEventListener("click", async () => {
-        if (!confirm("Delete all call records for this ref? This cannot be undone.")) return;
+        if (!(await confirmDelete("call records"))) return;
         const { error } = await window.DB.deleteCalls({ ref });
         if (error) { console.error("[Delete All] Calls:", error.message); return; }
         loadCallsLog(ref, 0);
@@ -756,7 +786,7 @@
     if (deleteAllMessages) {
       deleteAllMessages.style.display = "";
       deleteAllMessages.addEventListener("click", async () => {
-        if (!confirm("Delete all messages for this ref? This cannot be undone.")) return;
+        if (!(await confirmDelete("messages"))) return;
         const { error } = await window.DB.deleteMessages({ ref });
         if (error) { console.error("[Delete All] Messages:", error.message); return; }
         loadMessagesLog(ref, 0);
@@ -766,7 +796,7 @@
     if (deleteAllSessions) {
       deleteAllSessions.style.display = "";
       deleteAllSessions.addEventListener("click", async () => {
-        if (!confirm("Delete all session records for this ref? This cannot be undone.")) return;
+        if (!(await confirmDelete("guest session records"))) return;
         // Scope to guest sessions only — the Admin Sessions table has its
         // own delete controls and admin rows should survive a guest purge.
         const { error } = await window.DB.deleteSessions({ ref, notRole: "auth" });
@@ -779,7 +809,7 @@
     if (deleteAllAdminSessions) {
       deleteAllAdminSessions.style.display = "";
       deleteAllAdminSessions.addEventListener("click", async () => {
-        if (!confirm("Delete all admin session records for this ref? This cannot be undone.")) return;
+        if (!(await confirmDelete("admin session records"))) return;
         // Scope to admin (auth) sessions only — guest rows are untouched.
         const { error } = await window.DB.deleteSessions({ ref, role: "auth" });
         if (error) { console.error("[Delete All] Admin sessions:", error.message); return; }
@@ -1159,9 +1189,14 @@
     // Backgrounded tabs throttle audio — also raise an OS notification so the
     // agent doesn't miss the call while the tab is hidden.
     S.notifyIncomingCall("Incoming call", `${callType} call from ${data.callerName}`);
-    const incH1 = document.querySelector(".call-incoming h1");
-    if (incH1)
-      incH1.textContent = `Incoming ${callType} call from ${data.callerName}...`;
+    // Phone-style overlay: caller name front and center, avatar initial,
+    // call-type label beneath.
+    const nameEl = document.getElementById("incoming-name");
+    if (nameEl) nameEl.textContent = data.callerName || "Guest";
+    const typeEl = document.getElementById("incoming-type");
+    if (typeEl) typeEl.textContent = `Incoming ${callType} call`;
+    const avEl = document.getElementById("incoming-avatar");
+    if (avEl) avEl.innerHTML = S.avatarHtml(data.callerName || "?", "", "lg");
 
     S.hideSection(".call");
     S.hideSection(".logs");

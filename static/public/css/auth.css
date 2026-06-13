@@ -145,6 +145,104 @@ body {
 .auth-user .display-name,
 .auth-user .profile-picture { margin-top: 14px; max-width: none; }
 
+/* Settings gear + panel — the console face stays calm (greeting, toggle,
+   alerts line); everything else folds behind the gear. */
+.greeting-head { display: flex; align-items: center; justify-content: space-between; }
+.greeting-head h1 { margin: 0; }
+.settings-gear {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  cursor: pointer;
+  transition: transform 0.25s ease, background 0.2s;
+}
+.settings-gear svg { width: 20px; height: 20px; }
+.settings-gear:hover { background: #e2e8f0; }
+.settings-gear--open { transform: rotate(90deg); background: #e0e7ff; color: #4338ca; }
+.settings-panel {
+  margin-top: 14px;
+  padding: 14px 14px 16px;
+  border: 1px solid #e8ecf1;
+  border-radius: 12px;
+  background: #fbfcfe;
+}
+
+/* Incoming call — phone-style overlay. The section itself is just shown/
+   hidden by JS; the inner overlay owns the fixed positioning so it works
+   regardless of the section's display mode. */
+.call-incoming .incoming-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.incoming-card {
+  background: #fff;
+  border-radius: 22px;
+  padding: 36px 42px 30px;
+  width: 340px;
+  max-width: 92vw;
+  text-align: center;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+}
+.incoming-avatar { display: inline-block; position: relative; margin-bottom: 6px; }
+.incoming-avatar .avatar {
+  width: 84px;
+  height: 84px;
+  font-size: 2.1rem;
+  animation: incoming-pulse 1.6s ease-out infinite;
+}
+@keyframes incoming-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.45); }
+  70%  { box-shadow: 0 0 0 18px rgba(37, 99, 235, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+}
+.incoming-card h1.incoming-name { margin: 6px 0 2px; font-size: 1.45rem; }
+.incoming-type { margin: 0 0 22px; color: #64748b; font-size: 0.95rem; }
+.incoming-card .call-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 56px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.incoming-card .call-button { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.incoming-card .call-button button {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.incoming-card .call-button button:hover { transform: scale(1.08); filter: brightness(1.05); }
+.incoming-card .call-button button svg { width: 28px; height: 28px; }
+.incoming-card .accept-call-button { background: #16a34a; }
+.incoming-card .decline-call-button { background: #dc2626; }
+.incoming-card .decline-call-button svg { transform: rotate(135deg); }
+.call-button__label { font-size: 0.82rem; font-weight: 600; color: #475569; }
+@media (max-width: 560px) {
+  .incoming-card { padding: 30px 22px 26px; }
+  .incoming-card .call-buttons { gap: 44px; }
+  .incoming-card .call-button button { width: 72px; height: 72px; }
+}
+
 /* History tables: on narrow viewports (mobile / embedded widget) scroll
    horizontally inside the card rather than overflowing it. On desktop the
    media query below removes the scroll once there's room. */
