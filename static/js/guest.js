@@ -125,10 +125,17 @@
   let presenceAgents = [];
   let restAgents = [];
   function mergeAgents() {
-    const live = new Set(presenceAgents.map((u) => u.session_id));
-    authUsers = presenceAgents.concat(
-      restAgents.filter((a) => !live.has(a.session_id))
-    );
+    // Dedupe by user_id — the stable identity. A live agent's presence
+    // session_id differs from their durable record's (session ids churn across
+    // reopens), so deduping by session_id would double-list the same agent.
+    // Live presence wins; tag each so selection can prefer a connected agent
+    // over a push-only (Offline·Reachable) one.
+    const liveIds = new Set(presenceAgents.map((u) => u.user_id));
+    const live = presenceAgents.map((u) => ({ ...u, _live: true }));
+    const pushOnly = restAgents
+      .filter((a) => !liveIds.has(a.user_id))
+      .map((a) => ({ ...a, _live: false }));
+    authUsers = live.concat(pushOnly);
     if (state === "ready") updateCallButtons();
   }
   presenceChannel = S.joinPresenceChannel(params.ref, presenceData, (users) => {
@@ -322,16 +329,20 @@
   });
 
   // ─── Find longest-waiting available auth user ──────────────────────────
+  // Prefer a LIVE (connected) agent over a push-only (Offline·Reachable) one,
+  // so a call rings an agent who's actually at the console rather than a ghost.
+  // Only fall back to push-only when no live agent qualifies.
+  function pickLongestWaiting(pool) {
+    const live = pool.filter((u) => u._live);
+    const pick = live.length ? live : pool;
+    return pick.sort((a, b) => new Date(a.online_since) - new Date(b.online_since))[0] || null;
+  }
   function getLongestWaitingAuthUser() {
-    return authUsers
-      .filter((u) => u.has_mic)
-      .sort((a, b) => new Date(a.online_since) - new Date(b.online_since))[0] || null;
+    return pickLongestWaiting(authUsers.filter((u) => u.has_mic));
   }
 
   function getLongestWaitingAuthUserWithCamera() {
-    return authUsers
-      .filter((u) => u.has_mic && u.has_camera)
-      .sort((a, b) => new Date(a.online_since) - new Date(b.online_since))[0] || null;
+    return pickLongestWaiting(authUsers.filter((u) => u.has_mic && u.has_camera));
   }
 
   // ─── Initiate call (guest → auth) ──────────────────────────────────────

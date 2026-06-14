@@ -15,8 +15,28 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 )
+
+// discoveryFreshness bounds how long an OFFLINE-reachable (closed-console)
+// agent keeps appearing in guest discovery after their console was last seen.
+// It does NOT clear availability — only Pause/logout may do that ("Available
+// until Pause or log out"). It only stops RINGING a record whose console has
+// been gone for the whole window, so a truly abandoned ghost ages out of
+// discovery while a just-closed laptop stays reachable for the grace window
+// (an open console touches updated_at every few minutes; a push-woken reopen
+// re-touches it). A live agent is surfaced via WS presence and is never
+// subject to this filter. Override with DISCOVERY_FRESHNESS_HOURS; 0 disables.
+func discoveryFreshness() time.Duration {
+	if v := os.Getenv("DISCOVERY_FRESHNESS_HOURS"); v != "" {
+		if h, err := strconv.Atoi(v); err == nil {
+			return time.Duration(h) * time.Hour
+		}
+	}
+	return 24 * time.Hour
+}
 
 func upsertAvailability(db *sql.DB, ref string, userID int64, available bool, sessionID, displayName string, hasCamera bool, picture, onlineSince string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -138,11 +158,19 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, err.Error())
 		return
 	}
-	rows, err := db.Query(
-		`SELECT DISTINCT a.user_id, a.session_id, a.display_name, a.has_camera, a.picture, a.online_since
+	query := `SELECT DISTINCT a.user_id, a.session_id, a.display_name, a.has_camera, a.picture, a.online_since
 		 FROM agent_availability a
 		 JOIN push_subscriptions p ON p.user_id = a.user_id
-		 WHERE a.available = 1`)
+		 WHERE a.available = 1`
+	var rows *sql.Rows
+	if window := discoveryFreshness(); window > 0 {
+		// updated_at is RFC3339 UTC — lexically comparable. Hide records whose
+		// console hasn't been seen within the window (stale ghosts).
+		cutoff := time.Now().UTC().Add(-window).Format(time.RFC3339)
+		rows, err = db.Query(query+` AND a.updated_at > ?`, cutoff)
+	} else {
+		rows, err = db.Query(query)
+	}
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"agents": []any{}})
 		return

@@ -846,6 +846,16 @@
   refreshDurableReachable();
   setInterval(refreshDurableReachable, 15000);
 
+  // Keep the durable record fresh while the console is open. Discovery hides
+  // records whose console hasn't been seen for the freshness window, so a
+  // just-closed laptop stays reachable for the grace window after closing
+  // while a truly abandoned ghost (no console for the window) ages out of
+  // ringing — WITHOUT clearing the availability bit, which only Pause/logout
+  // may do. Touch never flips the bit (server-guarded to available = 1).
+  setInterval(() => {
+    if (isAvailable) postAvailability(true);
+  }, 4 * 60 * 1000);
+
   // Render the Agents list: every agent with their canonical state. Online
   // agents come from live presence; agents that are durably-reachable but not
   // in presence are Offline·Reachable (the closed-laptop case). Merge by
