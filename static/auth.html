@@ -179,26 +179,12 @@
         </div><!-- /settings-panel -->
       </section>
 
-      <!-- Online: live presence, updated in real time. Two groups — the guests
-           currently waiting (callable) and the agents on this tenant with their
-           live state (Available / Paused / In call / Reachable-via-push / Offline). -->
-      <section class="call" style="display: none">
-        <h1>Online</h1>
-        <h2 class="online-subhead">Users</h2>
-        <ul class="call-guest-users">
-          <!-- Populated by JS -->
-        </ul>
-        <h2 class="online-subhead">Agents</h2>
-        <ul class="online-agents">
-          <!-- Populated by JS (renderAgents) -->
-        </ul>
-      </section>
-
-      <!-- Instant Messaging (admin view: full roster of online users).
-           Docked bottom-right; click the header bar to minimize/expand. -->
+      <!-- Messages (primary). On the agent console this is a stacked card at
+           the top (auth.css un-docks it); on the guest page it stays a docked
+           bubble. Click the header bar to minimize/expand. -->
       <section class="im" style="display: none">
         <button type="button" class="im-dock-header">
-          <span class="im-dock-title">Online (0)</span>
+          <span class="im-dock-title">Messages</span>
           <span class="im-dock-unread" style="display: none">0</span>
           <span class="im-dock-chevron" aria-hidden="true">▾</span>
         </button>
@@ -231,6 +217,21 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- Online: live presence, updated in real time. Two groups — the guests
+           currently waiting (callable) and the agents on this tenant with their
+           live state (Available / Paused / In call / Reachable-via-push / Offline). -->
+      <section class="call" style="display: none">
+        <h1>Online</h1>
+        <h2 class="online-subhead">Users</h2>
+        <ul class="call-guest-users">
+          <!-- Populated by JS -->
+        </ul>
+        <h2 class="online-subhead">Agents</h2>
+        <ul class="online-agents">
+          <!-- Populated by JS (renderAgents) -->
+        </ul>
       </section>
 
       <!-- History -->
@@ -299,70 +300,9 @@
           </table>
           <div class="log-pagination" id="messages-pagination"></div>
         </section>
-
-        <!-- Sessions -->
-        <section class="log-sessions">
-          <div class="log-section-header">
-            <h2>Sessions</h2>
-            <button
-              class="delete-all-btn"
-              id="delete-all-sessions"
-              style="display: none"
-            >
-              Delete All
-            </button>
-          </div>
-          <table class="log-sessions-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Source</th>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Logged in</th>
-                <th>Last seen</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Rows populated by JS -->
-            </tbody>
-          </table>
-          <div class="log-pagination" id="sessions-pagination"></div>
-        </section>
-
-        <!-- Admin Sessions -->
-        <section class="log-admin-sessions">
-          <div class="log-section-header">
-            <h2>Admin Sessions</h2>
-            <button
-              class="delete-all-btn"
-              id="delete-all-admin-sessions"
-              style="display: none"
-            >
-              Delete All
-            </button>
-          </div>
-          <table class="log-admin-sessions-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Source</th>
-                <th>Email</th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Logged in</th>
-                <th>Last seen</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Rows populated by JS -->
-            </tbody>
-          </table>
-          <div class="log-pagination" id="admin-sessions-pagination"></div>
-        </section>
+        <!-- Sessions / Admin Sessions tables retired: live agent/guest presence
+             is now the truthful source (see the Online section above). History
+             keeps only the durable record (Calls + Messages). -->
       </section>
 
       <!-- Incoming call from a guest — phone-style overlay: caller front and

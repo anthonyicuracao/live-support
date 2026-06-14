@@ -744,18 +744,13 @@
   const LOG_PAGE_SIZE = 5;
   let callsPage = 0;
   let messagesPage = 0;
-  let sessionsPage = 0;
-  let adminSessionsPage = 0;
 
   // ─── Show main sections ────────────────────────────────────────────────
   S.showSection(".call");
 
-  // Logs: all auth users see calls + messages; admin also sees sessions
+  // History (Calls + Messages) is shown to all auth users.
   if (!isAdmin) {
     S.showSection(".logs");
-    document.querySelector(".log-sessions").style.display = "none";
-    const adminSessionsEl = document.querySelector(".log-admin-sessions");
-    if (adminSessionsEl) adminSessionsEl.style.display = "none";
     loadCallsLog(ref);
     loadMessagesLog(ref);
   } else {
@@ -778,7 +773,6 @@
 
     const deleteAllCalls = document.getElementById("delete-all-calls");
     const deleteAllMessages = document.getElementById("delete-all-messages");
-    const deleteAllSessions = document.getElementById("delete-all-sessions");
 
     if (deleteAllCalls) {
       deleteAllCalls.style.display = "";
@@ -800,29 +794,6 @@
       });
     }
 
-    if (deleteAllSessions) {
-      deleteAllSessions.style.display = "";
-      deleteAllSessions.addEventListener("click", async () => {
-        if (!(await confirmDelete("guest session records"))) return;
-        // Scope to guest sessions only — the Admin Sessions table has its
-        // own delete controls and admin rows should survive a guest purge.
-        const { error } = await window.DB.deleteSessions({ ref, notRole: "auth" });
-        if (error) { console.error("[Delete All] Sessions:", error.message); return; }
-        loadSessionsLog(ref, 0);
-      });
-    }
-
-    const deleteAllAdminSessions = document.getElementById("delete-all-admin-sessions");
-    if (deleteAllAdminSessions) {
-      deleteAllAdminSessions.style.display = "";
-      deleteAllAdminSessions.addEventListener("click", async () => {
-        if (!(await confirmDelete("admin session records"))) return;
-        // Scope to admin (auth) sessions only — guest rows are untouched.
-        const { error } = await window.DB.deleteSessions({ ref, role: "auth" });
-        if (error) { console.error("[Delete All] Admin sessions:", error.message); return; }
-        loadAdminSessionsLog(ref, 0);
-      });
-    }
   }
 
   // ─── App State ─────────────────────────────────────────────────────────
@@ -1636,11 +1607,6 @@
     S.showSection(".call");
 
     S.showSection(".logs");
-    if (!isAdmin) {
-      document.querySelector(".log-sessions").style.display = "none";
-      const adminSessionsEl = document.querySelector(".log-admin-sessions");
-      if (adminSessionsEl) adminSessionsEl.style.display = "none";
-    }
   }
 
   // ─── Alert ────────────────────────────────────────────────────────────
@@ -1683,12 +1649,8 @@
   async function loadLogs(ref) {
     callsPage = 0;
     messagesPage = 0;
-    sessionsPage = 0;
-    adminSessionsPage = 0;
     await loadCallsLog(ref, 0);
     await loadMessagesLog(ref, 0);
-    await loadSessionsLog(ref, 0);
-    await loadAdminSessionsLog(ref, 0);
   }
 
   function subscribeToLogChanges(ref) {
@@ -1698,14 +1660,9 @@
       let t;
       return () => { clearTimeout(t); t = setTimeout(fn, ms); };
     };
-    const reloadSessions = debounce(() => {
-      loadSessionsLog(ref, sessionsPage);
-      loadAdminSessionsLog(ref, adminSessionsPage);
-    });
     const reloaders = {
       calls:    debounce(() => loadCallsLog(ref, callsPage)),
       messages: debounce(() => loadMessagesLog(ref, messagesPage)),
-      sessions: reloadSessions,
     };
     window.Realtime
       .channel(`dashboard:${ref}`)
@@ -1720,8 +1677,6 @@
     const reloadAll = debounce(() => {
       loadCallsLog(ref, callsPage);
       loadMessagesLog(ref, messagesPage);
-      loadSessionsLog(ref, sessionsPage);
-      loadAdminSessionsLog(ref, adminSessionsPage);
     }, 300);
     if (window.Realtime.onReconnect) window.Realtime.onReconnect(reloadAll);
     document.addEventListener("visibilitychange", () => {
@@ -1826,102 +1781,8 @@
     }
   }
 
-  async function loadSessionsLog(ref, page = 0) {
-    sessionsPage = page;
-    // Exclude admin (auth) rows — they get their own Admin Sessions table.
-    const { data, error, count } = await window.DB.listSessions({
-      ref, page, pageSize: LOG_PAGE_SIZE, notRole: "auth",
-    });
-
-    if (error) { console.error("[Logs] Sessions:", error.message); return; }
-
-    const tbody = document.querySelector(".log-sessions-table tbody");
-    if (!tbody) return;
-    tbody.innerHTML = "";
-    (data || []).forEach((sess) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${S.escapeHtml(sess.session_id || "")}</td>
-        <td>${S.escapeHtml(sess.ref || "")}</td>
-        <td>${S.escapeHtml(sess.email || "")}</td>
-        <td>${S.escapeHtml(sess.name || "")}</td>
-        <td>${S.escapeHtml(sess.status || "")}</td>
-        <td>${sess.logged_in_at ? new Date(sess.logged_in_at).toLocaleString() : ""}</td>
-        <td>${sess.last_seen_at ? new Date(sess.last_seen_at).toLocaleString() : ""}</td>
-        <td>${isAdmin ? `<button data-id="${sess.id}" class="delete-sess-btn">Delete</button>` : ""}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-    if (isAdmin) {
-      tbody.querySelectorAll(".delete-sess-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          await window.DB.deleteSessionById(btn.dataset.id);
-          btn.closest("tr").remove();
-          if (tbody.querySelectorAll("tr").length === 0 && sessionsPage > 0) {
-            loadSessionsLog(ref, sessionsPage - 1);
-            return;
-          }
-          renderPagination("sessions-pagination", sessionsPage, (count || 1) - 1,
-            (p) => loadSessionsLog(ref, p));
-        });
-      });
-    }
-
-    renderPagination("sessions-pagination", page, count || 0,
-      (p) => loadSessionsLog(ref, p));
-    if (isAdmin) {
-      const btn = document.getElementById("delete-all-sessions");
-      if (btn) btn.style.display = (count || 0) > 1 ? "" : "none";
-    }
-  }
-
-  async function loadAdminSessionsLog(ref, page = 0) {
-    adminSessionsPage = page;
-    const { data, error, count } = await window.DB.listSessions({
-      ref, page, pageSize: LOG_PAGE_SIZE, role: "auth",
-    });
-
-    if (error) { console.error("[Logs] Admin sessions:", error.message); return; }
-
-    const tbody = document.querySelector(".log-admin-sessions-table tbody");
-    if (!tbody) return;
-    tbody.innerHTML = "";
-    (data || []).forEach((sess) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${S.escapeHtml(sess.session_id || "")}</td>
-        <td>${S.escapeHtml(sess.ref || "")}</td>
-        <td>${S.escapeHtml(sess.email || "")}</td>
-        <td>${S.escapeHtml(sess.name || "")}</td>
-        <td>${S.escapeHtml(sess.status || "")}</td>
-        <td>${sess.logged_in_at ? new Date(sess.logged_in_at).toLocaleString() : ""}</td>
-        <td>${sess.last_seen_at ? new Date(sess.last_seen_at).toLocaleString() : ""}</td>
-        <td>${isAdmin ? `<button data-id="${sess.id}" class="delete-admin-sess-btn">Delete</button>` : ""}</td>
-      `;
-      tbody.appendChild(tr);
-    });
-    if (isAdmin) {
-      tbody.querySelectorAll(".delete-admin-sess-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          await window.DB.deleteSessionById(btn.dataset.id);
-          btn.closest("tr").remove();
-          if (tbody.querySelectorAll("tr").length === 0 && adminSessionsPage > 0) {
-            loadAdminSessionsLog(ref, adminSessionsPage - 1);
-            return;
-          }
-          renderPagination("admin-sessions-pagination", adminSessionsPage, (count || 1) - 1,
-            (p) => loadAdminSessionsLog(ref, p));
-        });
-      });
-    }
-
-    renderPagination("admin-sessions-pagination", page, count || 0,
-      (p) => loadAdminSessionsLog(ref, p));
-    if (isAdmin) {
-      const btn = document.getElementById("delete-all-admin-sessions");
-      if (btn) btn.style.display = (count || 0) > 1 ? "" : "none";
-    }
-  }
+  // (Sessions / Admin Sessions log tables retired — live agent/guest presence
+  // is the truthful source now; see renderAgents + the Online section.)
 
   // ─── Instant Messaging (admin view) ────────────────────────────────────
   // Admins can start a chat with anyone online for this ref (guests AND other
@@ -2000,10 +1861,10 @@
       // Mark existing threads online/offline so we can still show history for
       // someone who just went offline.
       for (const [id, t] of threads) t.online = onlineIds.has(id);
-      // Dock title shows the live count of online guests available to chat.
+      // Header label: "Messages" + a live count of people available to chat.
       if (dockTitle) {
-        const guestCount = roster.filter((u) => u.role === "guest").length;
-        dockTitle.textContent = `Online (${guestCount})`;
+        const chatCount = roster.length;
+        dockTitle.textContent = chatCount ? `Messages (${chatCount})` : "Messages";
       }
       renderRoster();
     }

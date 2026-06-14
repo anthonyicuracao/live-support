@@ -19,6 +19,7 @@ body {
 /* Card the stacked sections (not the full-screen call overlay). */
 .auth-user > .greeting,
 .auth-user > .call,
+.auth-user > .im,
 .auth-user > .logs {
   background: #fff;
   border: 1px solid #e3e6ea;
@@ -30,6 +31,31 @@ body {
 .auth-user .greeting h1,
 .auth-user .call h1,
 .auth-user .logs h1 { margin-top: 0; }
+
+/* Messages: on the agent console the IM is a stacked card at the top (the
+   guest page keeps the docked bubble from index.css — auth.css is agent-only).
+   Override the fixed dock so it flows in the column and never offsets right on
+   mobile. */
+.auth-user > .im {
+  position: static;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  width: auto;
+  max-width: none;
+  box-shadow: none;
+  overflow: visible;
+  padding: 0; /* the dock-header + body provide their own padding */
+}
+.auth-user > .im .im-dock-header {
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+}
+/* When collapsed, round the bottom corners too (no body showing). */
+.auth-user > .im.im-collapsed .im-dock-header {
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 16px;
+}
 
 /* Availability hero — a calm banner that frames the toggle. */
 .auth-user .availability {
