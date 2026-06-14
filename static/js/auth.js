@@ -842,6 +842,8 @@
   let presenceChannel = null;
   let inboxChannel = null;
   let guestUsers = [];
+  let presenceAgents = [];        // live auth members from presence (Online)
+  let durableReachable = [];      // /api/agents/available (Offline·Reachable source)
 
   // ─── Presence ──────────────────────────────────────────────────────────
   presenceChannel = S.joinPresenceChannel(ref, presenceData, (users) => {
@@ -849,12 +851,59 @@
     guestUsers = users.filter(
       (u) => u.role === "guest" && u.status === "available"
     );
+    // All connected agents (Online) with their live status field.
+    presenceAgents = users.filter((u) => u.role === "auth");
     if (state === "ready") renderGuestList();
+    renderAgents();
     // Admins see the full roster (guests + other admins, same ref) for IM.
     // Guests never receive this list — that asymmetry is what keeps the admin
     // roster hidden from guests.
     IM.updateRoster(users);
   });
+
+  // Offline·Reachable agents (durably available + push-subscribed, but no live
+  // console) come from the REST roster — refresh periodically and merge.
+  async function refreshDurableReachable() {
+    try {
+      const r = await fetch(`/api/agents/available?ref=${encodeURIComponent(ref)}`);
+      if (r.ok) durableReachable = (await r.json()).agents || [];
+    } catch (e) {
+      /* keep last list */
+    }
+    renderAgents();
+  }
+  refreshDurableReachable();
+  setInterval(refreshDurableReachable, 15000);
+
+  // Render the Agents list: every agent with their canonical state. Online
+  // agents come from live presence; agents that are durably-reachable but not
+  // in presence are Offline·Reachable (the closed-laptop case). Merge by
+  // user_id (session ids churn across reopens).
+  function renderAgents() {
+    const ul = document.querySelector(".online-agents");
+    if (!ul) return;
+    const onlineIds = new Set(presenceAgents.map((a) => a.user_id));
+    const rows = [];
+    presenceAgents.forEach((a) => rows.push({ rec: a, st: S.agentState(a, false) }));
+    durableReachable.forEach((a) => {
+      if (!onlineIds.has(a.user_id)) rows.push({ rec: a, st: S.agentState(null, true) });
+    });
+    // Sort: Online first (Available, In call, Paused), then Offline·Reachable.
+    const order = { available: 0, "in-call": 1, paused: 2, reachable: 3, offline: 4 };
+    rows.sort((x, y) => (order[x.st.key] - order[y.st.key]) || String(x.rec.name).localeCompare(String(y.rec.name)));
+    if (rows.length === 0) {
+      ul.innerHTML = "<li><p class=\"online-empty\">No agents online.</p></li>";
+      return;
+    }
+    ul.innerHTML = rows
+      .map(({ rec, st }) => `
+        <li class="agent-row">
+          ${S.avatarHtml(rec.name || "?", rec.picture || "", "sm")}
+          <span class="agent-name">${S.escapeHtml(rec.name || "Agent")}${rec.user_id === userId ? " (you)" : ""}</span>
+          <span class="agent-badge agent-badge--${st.key}">${S.escapeHtml(st.label)}</span>
+        </li>`)
+      .join("");
+  }
 
   // ─── Inbox ─────────────────────────────────────────────────────────────
   inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);

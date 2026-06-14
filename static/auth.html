@@ -179,12 +179,18 @@
         </div><!-- /settings-panel -->
       </section>
 
-      <!-- Make a call to an guest user -->
+      <!-- Online: live presence, updated in real time. Two groups — the guests
+           currently waiting (callable) and the agents on this tenant with their
+           live state (Available / Paused / In call / Reachable-via-push / Offline). -->
       <section class="call" style="display: none">
         <h1>Online</h1>
-        <!-- List of online users -->
+        <h2 class="online-subhead">Users</h2>
         <ul class="call-guest-users">
           <!-- Populated by JS -->
+        </ul>
+        <h2 class="online-subhead">Agents</h2>
+        <ul class="online-agents">
+          <!-- Populated by JS (renderAgents) -->
         </ul>
       </section>
 
