@@ -257,6 +257,15 @@ func removeUser(db *sql.DB, userID int64) error {
 	if _, err := tx.Exec(`DELETE FROM password_resets WHERE user_id = ?`, userID); err != nil {
 		return err
 	}
+	// Durable availability + push subscriptions also reference the user. Without
+	// these, a deleted agent lingers as an un-killable ghost in discovery (their
+	// availability row keeps ringing and there's no account left to Pause it).
+	if _, err := tx.Exec(`DELETE FROM agent_availability WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM push_subscriptions WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, userID); err != nil {
 		return err
 	}

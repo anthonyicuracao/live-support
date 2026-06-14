@@ -228,6 +228,17 @@ func openDB(path string) (*sql.DB, error) {
 	if _, err := d.Exec(schema); err != nil {
 		return nil, err
 	}
+	// Self-heal orphans: FK cascade is off on this connection, and deletes
+	// predating removeUser's explicit child cleanup left availability / push
+	// rows pointing at users that no longer exist — they surface as
+	// un-killable ghosts in discovery. Sweep them once on open so a deploy
+	// fixes existing data, not just future deletes.
+	if _, err := d.Exec(`DELETE FROM agent_availability WHERE user_id NOT IN (SELECT id FROM users)`); err != nil {
+		return nil, err
+	}
+	if _, err := d.Exec(`DELETE FROM push_subscriptions WHERE user_id NOT IN (SELECT id FROM users)`); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
 

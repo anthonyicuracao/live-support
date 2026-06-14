@@ -189,7 +189,16 @@ body {
 }
 .agent-row:last-child { border-bottom: none; }
 .agent-row .avatar { width: 30px; height: 30px; font-size: 0.85rem; flex: 0 0 auto; }
-.agent-name { flex: 1; font-weight: 600; color: #1f2937; font-size: 0.95rem; }
+.agent-name {
+  flex: 1;
+  min-width: 0; /* allow the name to shrink so the badge never overflows the row */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.95rem;
+}
 .agent-badge {
   flex: 0 0 auto;
   font-size: 0.72rem;

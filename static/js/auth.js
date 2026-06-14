@@ -863,24 +863,30 @@
   function renderAgents() {
     const ul = document.querySelector(".online-agents");
     if (!ul) return;
+    // OTHER agents only — your own state is the availability toggle in the
+    // greeting above, so listing yourself here is just noise.
     const onlineIds = new Set(presenceAgents.map((a) => a.user_id));
     const rows = [];
-    presenceAgents.forEach((a) => rows.push({ rec: a, st: S.agentState(a, false) }));
+    presenceAgents.forEach((a) => {
+      if (a.user_id !== userId) rows.push({ rec: a, st: S.agentState(a, false) });
+    });
     durableReachable.forEach((a) => {
-      if (!onlineIds.has(a.user_id)) rows.push({ rec: a, st: S.agentState(null, true) });
+      if (a.user_id !== userId && !onlineIds.has(a.user_id)) {
+        rows.push({ rec: a, st: S.agentState(null, true) });
+      }
     });
     // Sort: Online first (Available, In call, Paused), then Offline·Reachable.
     const order = { available: 0, "in-call": 1, paused: 2, reachable: 3, offline: 4 };
     rows.sort((x, y) => (order[x.st.key] - order[y.st.key]) || String(x.rec.name).localeCompare(String(y.rec.name)));
     if (rows.length === 0) {
-      ul.innerHTML = "<li><p class=\"online-empty\">No agents online.</p></li>";
+      ul.innerHTML = "<li><p class=\"online-empty\">No other agents online.</p></li>";
       return;
     }
     ul.innerHTML = rows
       .map(({ rec, st }) => `
         <li class="agent-row">
           ${S.avatarHtml(rec.name || "?", rec.picture || "", "sm")}
-          <span class="agent-name">${S.escapeHtml(rec.name || "Agent")}${rec.user_id === userId ? " (you)" : ""}</span>
+          <span class="agent-name">${S.escapeHtml(rec.name || "Agent")}</span>
           <span class="agent-badge agent-badge--${st.key}">${S.escapeHtml(st.label)}</span>
         </li>`)
       .join("");

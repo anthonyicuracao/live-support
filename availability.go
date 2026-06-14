@@ -158,9 +158,13 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, err.Error())
 		return
 	}
+	// JOIN users so an orphaned availability row (deleted account) or a
+	// deactivated agent can never surface as a callable ghost — only a real,
+	// active user with a push subscription is discoverable.
 	query := `SELECT DISTINCT a.user_id, a.session_id, a.display_name, a.has_camera, a.picture, a.online_since
 		 FROM agent_availability a
 		 JOIN push_subscriptions p ON p.user_id = a.user_id
+		 JOIN users u ON u.id = a.user_id AND u.active = 1
 		 WHERE a.available = 1`
 	var rows *sql.Rows
 	if window := discoveryFreshness(); window > 0 {
