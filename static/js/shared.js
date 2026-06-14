@@ -539,7 +539,37 @@ window.Shared = (() => {
     });
   }
 
+  // ─── Canonical agent state ────────────────────────────────────────────────
+  // The single source of truth for how an agent's state is derived and labeled,
+  // so every view (the Agents list, future dashboards) agrees. Two orthogonal
+  // axes: connection (Online = holds a live presence entry) and availability
+  // (the agent's own toggle). An agent with no live presence is Offline, but
+  // may still be Reachable via push (durable availability + a push sub) — the
+  // closed-laptop case. A stale Offline·Reachable record that never answers is
+  // the "ghost".
+  //   presenceMember: the agent's live presence entry, or null/undefined if not
+  //                   currently connected. Its `status` is "available" | "paused"
+  //                   | "in-call".
+  //   durablyReachable: true if the agent is durably available AND push-subscribed
+  //                     (i.e. appears in GET /api/agents/available) — only
+  //                     meaningful when offline.
+  // Returns { online, reachable, key, label } where key is a stable token for
+  // styling and label is the human string.
+  function agentState(presenceMember, durablyReachable) {
+    if (presenceMember) {
+      const a = presenceMember.status;
+      if (a === "in-call") return { online: true, reachable: false, key: "in-call", label: "In call" };
+      if (a === "available") return { online: true, reachable: true, key: "available", label: "Available" };
+      return { online: true, reachable: false, key: "paused", label: "Paused" };
+    }
+    if (durablyReachable) {
+      return { online: false, reachable: true, key: "reachable", label: "Reachable (push)" };
+    }
+    return { online: false, reachable: false, key: "offline", label: "Offline" };
+  }
+
   return {
+    agentState,
     getUrlParams,
     ensureNameParam,
     generateId,

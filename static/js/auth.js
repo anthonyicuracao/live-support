@@ -269,8 +269,12 @@
   // acquires media from the Accept click itself (a user gesture, so Safari
   // prompts cleanly even on a freshly reopened tab).
   let isAvailable = false;
+  // A connected agent is always Online (they hold a live presence entry); this
+  // is the availability SUB-STATE, not the connection. "paused" — not
+  // "offline" — because a paused agent is still connected, just not taking
+  // calls. Genuine disconnection is leaving the presence channel entirely.
   function availabilityStatus() {
-    return isAvailable ? "available" : "offline";
+    return isAvailable ? "available" : "paused";
   }
   // Push the durable state (and this tab's session id) to the server. Called
   // on every toggle flip and when resuming availability in a fresh tab, so
@@ -444,6 +448,8 @@
 
   const presenceData = {
     session_id: sessionId,
+    user_id: userId, // stable identity so views can merge presence with the
+                     // durable roster (a session_id churns across reopens)
     name: displayName,
     role: "auth",
     status: availabilityStatus(),
@@ -462,9 +468,10 @@
     hasCamera: perms.hasCamera,
     hasMic: true,
   });
-  // createSession always writes status=available; reconcile with toggle.
+  // createSession always writes status=available; reconcile with the toggle
+  // (a connected-but-paused agent is "paused", not "offline" — they're Online).
   if (!isAvailable) {
-    await S.updateSessionStatus(sessionId, "offline");
+    await S.updateSessionStatus(sessionId, "paused");
   }
 
   // Reflect persisted state in the UI and wire up the change handler.

@@ -1379,8 +1379,13 @@ func onlineHandler(w http.ResponseWriter, r *http.Request) {
 
 	count, withCamera, withMic := 0, 0, 0
 	for _, d := range targets {
+		// Count agents reachable for a call now: exclude both 'offline'
+		// (disconnected) and 'paused' (connected but not taking calls). A
+		// connected agent is 'available' or 'in-call'; both mean an agent is
+		// present, so the legacy "is anyone online" signal stays truthful after
+		// 'paused' became its own status (was previously stored as 'offline').
 		rows, err := d.Query(
-			"SELECT has_camera, has_mic FROM sessions WHERE role = 'auth' AND status != 'offline' AND last_seen_at > ?",
+			"SELECT has_camera, has_mic FROM sessions WHERE role = 'auth' AND status NOT IN ('offline', 'paused') AND last_seen_at > ?",
 			cutoff)
 		if err != nil {
 			continue

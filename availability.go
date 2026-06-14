@@ -139,7 +139,7 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := db.Query(
-		`SELECT DISTINCT a.session_id, a.display_name, a.has_camera, a.picture, a.online_since
+		`SELECT DISTINCT a.user_id, a.session_id, a.display_name, a.has_camera, a.picture, a.online_since
 		 FROM agent_availability a
 		 JOIN push_subscriptions p ON p.user_id = a.user_id
 		 WHERE a.available = 1`)
@@ -150,10 +150,12 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	agents := []map[string]any{}
 	for rows.Next() {
+		var userID int64
 		var sessionID, displayName, picture, onlineSince string
 		var hasCamera int
-		if err := rows.Scan(&sessionID, &displayName, &hasCamera, &picture, &onlineSince); err == nil {
+		if err := rows.Scan(&userID, &sessionID, &displayName, &hasCamera, &picture, &onlineSince); err == nil {
 			agents = append(agents, map[string]any{
+				"user_id":      userID,
 				"session_id":   sessionID,
 				"name":         displayName,
 				"role":         "auth",
