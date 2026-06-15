@@ -179,12 +179,14 @@
         </div><!-- /settings-panel -->
       </section>
 
-      <!-- Messages (primary). On the agent console this is a stacked card at
-           the top (auth.css un-docks it); on the guest page it stays a docked
-           bubble. Click the header bar to minimize/expand. -->
+      <!-- Chats (primary): live, real-time conversations. On the agent console
+           this is a stacked card at the top (auth.css un-docks it); on the guest
+           page it stays a docked bubble. The dock auto-expands and bolds threads
+           with unread messages. Distinct from the async "Messages" section below
+           (guest contact-form notes). Click the header bar to minimize/expand. -->
       <section class="im" style="display: none">
         <button type="button" class="im-dock-header">
-          <span class="im-dock-title">Messages</span>
+          <span class="im-dock-title">Chats</span>
           <span class="im-dock-unread" style="display: none">0</span>
           <span class="im-dock-chevron" aria-hidden="true">▾</span>
         </button>
@@ -192,7 +194,7 @@
           <div class="im-layout">
             <!-- Left: people online (guests + admins, same ref) + open threads -->
             <div class="im-sidebar">
-              <h2 class="im-sidebar-title">Online</h2>
+              <h2 class="im-sidebar-title">People</h2>
               <ul class="im-roster">
                 <!-- Populated by JS -->
               </ul>
@@ -219,69 +221,22 @@
         </div>
       </section>
 
-      <!-- Online: live presence, updated in real time. Two groups — the guests
-           currently waiting (callable) and the agents on this tenant with their
-           live state (Available / Paused / In call / Reachable-via-push / Offline). -->
-      <section class="call" style="display: none">
-        <h1>Online</h1>
-        <h2 class="online-subhead">Users</h2>
-        <ul class="call-guest-users">
-          <!-- Populated by JS -->
-        </ul>
-        <h2 class="online-subhead">Agents</h2>
-        <ul class="online-agents">
-          <!-- Populated by JS (renderAgents) -->
-        </ul>
-      </section>
-
-      <!-- History -->
-      <section class="logs" style="display: none">
-        <h1>History</h1>
-
-        <!-- Calls -->
-        <section class="log-calls">
-          <div class="log-section-header">
-            <h2>Calls</h2>
-            <button
-              class="delete-all-btn"
-              id="delete-all-calls"
-              style="display: none"
-            >
-              Delete All
-            </button>
-          </div>
-          <table class="log-calls-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Source</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Type</th>
-                <th>Started</th>
-                <th>Duration</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Rows populated by JS -->
-            </tbody>
-          </table>
-          <div class="log-pagination" id="calls-pagination"></div>
-        </section>
-        <!-- Messages -->
-        <section class="log-messages">
-          <div class="log-section-header">
-            <h2>Messages</h2>
-            <button
-              class="delete-all-btn"
-              id="delete-all-messages"
-              style="display: none"
-            >
-              Delete All
-            </button>
-          </div>
+      <!-- Messages (async): notes guests leave via the offline contact form
+           when no agent is live. Distinct from "Chats" above (real-time). Pulled
+           up to its own section (was buried in History) so unanswered notes are
+           visible at a glance. -->
+      <section class="messages" style="display: none">
+        <div class="log-section-header">
+          <h1>Messages</h1>
+          <button
+            class="delete-all-btn"
+            id="delete-all-messages"
+            style="display: none"
+          >
+            Delete All
+          </button>
+        </div>
+        <div class="log-messages">
           <table class="log-messages-table">
             <thead>
               <tr>
@@ -299,10 +254,65 @@
             </tbody>
           </table>
           <div class="log-pagination" id="messages-pagination"></div>
-        </section>
-        <!-- Sessions / Admin Sessions tables retired: live agent/guest presence
-             is now the truthful source (see the Online section above). History
-             keeps only the durable record (Calls + Messages). -->
+        </div>
+      </section>
+
+      <!-- Online: live presence, updated in real time. Two groups — the guests
+           currently waiting (callable) and the agents on this tenant with their
+           live state (Available / Paused / In call / Reachable-via-push / Offline). -->
+      <section class="call" style="display: none">
+        <h1>Online</h1>
+        <h2 class="online-subhead">Users</h2>
+        <ul class="call-guest-users">
+          <!-- Populated by JS -->
+        </ul>
+        <h2 class="online-subhead">Agents</h2>
+        <ul class="online-agents">
+          <!-- Populated by JS (renderAgents) -->
+        </ul>
+      </section>
+
+      <!-- History (Calls): the durable call record. Collapsed by default — tap
+           the header to expand. Messages moved to their own section above. -->
+      <section class="logs logs--collapsed" style="display: none">
+        <button type="button" class="logs-toggle" aria-expanded="false">
+          <h1>History</h1>
+          <span class="logs-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="logs-body">
+          <!-- Calls -->
+          <section class="log-calls">
+            <div class="log-section-header">
+              <h2>Calls</h2>
+              <button
+                class="delete-all-btn"
+                id="delete-all-calls"
+                style="display: none"
+              >
+                Delete All
+              </button>
+            </div>
+            <table class="log-calls-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Source</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Type</th>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Rows populated by JS -->
+              </tbody>
+            </table>
+            <div class="log-pagination" id="calls-pagination"></div>
+          </section>
+        </div>
       </section>
 
       <!-- Incoming call from a guest — phone-style overlay: caller front and

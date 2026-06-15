@@ -20,6 +20,7 @@ body {
 .auth-user > .greeting,
 .auth-user > .call,
 .auth-user > .im,
+.auth-user > .messages,
 .auth-user > .logs {
   background: #fff;
   border: 1px solid #e3e6ea;
@@ -30,7 +31,32 @@ body {
 .auth-user > .greeting { margin-bottom: 16px; }
 .auth-user .greeting h1,
 .auth-user .call h1,
+.auth-user .messages h1,
 .auth-user .logs h1 { margin-top: 0; }
+/* Messages section header (title + Delete All) sits inline. */
+.auth-user > .messages .log-section-header { margin-bottom: 8px; }
+.auth-user > .messages .log-messages { overflow-x: auto; }
+
+/* History: collapsible. The header is a full-width tappable bar; the body
+   hides when collapsed. Chevron points down when expanded, right when not. */
+.auth-user > .logs { padding: 0; }
+.logs-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 22px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.logs-toggle h1 { margin: 0; color: #1a202c; } /* button context inherits white otherwise */
+.logs-chevron { color: #94a3b8; font-size: 1.1rem; transition: transform 0.2s ease; }
+.logs--collapsed .logs-chevron { transform: rotate(-90deg); }
+.logs-body { padding: 0 22px 22px; }
+.logs--collapsed .logs-body { display: none; }
 
 /* Messages: on the agent console the IM is a stacked card at the top (the
    guest page keeps the docked bubble from index.css — auth.css is agent-only).
@@ -55,6 +81,11 @@ body {
 .auth-user > .im.im-collapsed .im-dock-header {
   border-bottom-left-radius: 16px;
   border-bottom-right-radius: 16px;
+}
+/* Unread chat threads stay bold in the roster until the agent opens them. */
+.auth-user .im-roster-item--unread .im-roster-name {
+  font-weight: 800;
+  color: #0f172a;
 }
 
 /* Availability hero — a calm banner that frames the toggle. */
@@ -319,31 +350,24 @@ body {
 /* History tables: on narrow viewports (mobile / embedded widget) scroll
    horizontally inside the card rather than overflowing it. On desktop the
    media query below removes the scroll once there's room. */
-.auth-user .logs .log-calls,
-.auth-user .logs .log-messages,
-.auth-user .logs .log-sessions,
-.auth-user .logs .log-admin-sessions { overflow-x: auto; }
+.auth-user .logs .log-calls { overflow-x: auto; }
 
 /* Desktop: give the console room so the History tables are visible at a glance
    without horizontal scroll. The hub (greeting + online) stays a tidy centered
    column for the modal feel; only History spreads to the full width. */
+/* Desktop: one calm, uniform centered column for every section. Wide tables
+   (Calls, Messages) scroll horizontally inside their card rather than breaking
+   the column width. */
 @media (min-width: 980px) {
-  .auth-user { max-width: 1100px; }
-  .auth-user > .greeting,
-  .auth-user > .call {
-    max-width: 620px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-  .auth-user .logs .log-calls,
-  .auth-user .logs .log-messages,
-  .auth-user .logs .log-sessions,
-  .auth-user .logs .log-admin-sessions { overflow-x: visible; }
+  .auth-user { max-width: 720px; }
 }
 
 @media (max-width: 560px) {
   .auth-user { padding: 16px 10px 96px; }
   .auth-user > .greeting,
   .auth-user > .call,
-  .auth-user > .logs { padding: 16px; border-radius: 14px; }
+  .auth-user > .messages { padding: 16px; border-radius: 14px; }
+  .auth-user > .logs { border-radius: 14px; }
+  .logs-toggle { padding: 16px; }
+  .logs-body { padding: 0 16px 16px; }
 }

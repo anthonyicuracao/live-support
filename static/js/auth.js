@@ -208,6 +208,17 @@
     });
   })();
 
+  // History (Calls) collapses by default — tap the header to expand/collapse.
+  (function wireHistoryToggle() {
+    const logs = document.querySelector(".logs");
+    const toggle = logs?.querySelector(".logs-toggle");
+    if (!logs || !toggle) return; // no-op if History isn't rendered
+    toggle.addEventListener("click", () => {
+      const collapsed = logs.classList.toggle("logs--collapsed");
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    });
+  })();
+
   (function renderAccountBar() {
     if (!me) return;
     // The account links live inside the settings panel (fall back to the
@@ -747,8 +758,9 @@
 
   // ─── Show main sections ────────────────────────────────────────────────
   S.showSection(".call");
+  S.showSection(".messages"); // async guest contact-form notes (own section)
 
-  // History (Calls + Messages) is shown to all auth users.
+  // Messages (async notes) + History (Calls) are shown to all auth users.
   if (!isAdmin) {
     S.showSection(".logs");
     loadCallsLog(ref);
@@ -1831,9 +1843,11 @@
     section.style.display = "";
     section.classList.add("im-collapsed");
 
-    // No conversation selected yet — hide the thread pane until the agent
-    // picks someone from the roster.
-    if (threadEl) threadEl.style.display = "none";
+    // No conversation selected yet — keep the thread pane visible with its
+    // "Select someone to chat" placeholder (input disabled) so the expanded
+    // Chats card fills its width like a normal chat app instead of leaving a
+    // big empty area beside the narrow roster. openThread() activates it.
+    if (threadEl) threadEl.style.display = "";
 
     // Click the header bar to minimize / expand, like Facebook chat.
     if (dockHeader) {
@@ -1877,10 +1891,10 @@
       // Mark existing threads online/offline so we can still show history for
       // someone who just went offline.
       for (const [id, t] of threads) t.online = onlineIds.has(id);
-      // Header label: "Messages" + a live count of people available to chat.
+      // Header label: "Chats" + a live count of people available to chat.
       if (dockTitle) {
         const chatCount = roster.length;
-        dockTitle.textContent = chatCount ? `Messages (${chatCount})` : "Messages";
+        dockTitle.textContent = chatCount ? `Chats (${chatCount})` : "Chats";
       }
       renderRoster();
     }
@@ -1902,10 +1916,13 @@
       }
       for (const u of byId.values()) {
         const t = threads.get(u.id);
+        const hasUnread = !!(t && t.unread > 0);
         const li = document.createElement("li");
-        li.className = "im-roster-item" + (u.id === activePeerId ? " im-active" : "");
+        li.className = "im-roster-item"
+          + (u.id === activePeerId ? " im-active" : "")
+          + (hasUnread ? " im-roster-item--unread" : ""); // bold until read
         li.dataset.peerId = u.id;
-        const unread = t && t.unread > 0
+        const unread = hasUnread
           ? `<span class="im-unread">${t.unread}</span>` : "";
         // Only admins get a role pill; guests show just their name.
         const rolePill = u.role === "auth"
@@ -1987,6 +2004,9 @@
         renderMessages();
       } else {
         t.unread = (t.unread || 0) + 1;
+        // Surface the unread chat: pop the dock open (collapsed → expanded) so
+        // the agent sees the bolded thread without having to notice the badge.
+        section.classList.remove("im-collapsed");
       }
       renderRoster();
       renderDockUnread();
