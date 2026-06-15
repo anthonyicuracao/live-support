@@ -277,6 +277,10 @@ window.configReady = (async function () {
     insertMessage: (m) => api("POST", "/api/messages", m),
     listMessages: ({ ref, page = 0, pageSize = 5 }) =>
       api("GET", `/api/messages?ref=${encodeURIComponent(ref)}&page=${page}&pageSize=${pageSize}`),
+    markMessageRead: (id, ref) =>
+      api("PATCH", `/api/messages/${id}?ref=${encodeURIComponent(ref)}`),
+    unreadMessageCount: ({ ref }) =>
+      api("GET", `/api/messages?ref=${encodeURIComponent(ref)}&unread=1`),
     deleteMessageById: (id) => api("DELETE", `/api/messages/${id}`),
     deleteMessages: ({ ref }) => api("DELETE", `/api/messages?ref=${encodeURIComponent(ref)}`),
 

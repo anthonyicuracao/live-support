@@ -222,38 +222,42 @@
       </section>
 
       <!-- Messages (async): notes guests leave via the offline contact form
-           when no agent is live. Distinct from "Chats" above (real-time). Pulled
-           up to its own section (was buried in History) so unanswered notes are
-           visible at a glance. -->
-      <section class="messages" style="display: none">
-        <div class="log-section-header">
-          <h1>Messages</h1>
-          <button
-            class="delete-all-btn"
-            id="delete-all-messages"
-            style="display: none"
-          >
-            Delete All
-          </button>
-        </div>
-        <div class="log-messages">
-          <table class="log-messages-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Source</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Message</th>
-                <th>Time</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Rows populated by JS -->
-            </tbody>
-          </table>
-          <div class="log-pagination" id="messages-pagination"></div>
+           when no agent is live. Distinct from "Chats" above (real-time). An
+           inbox: unread notes are bold, the row expands to the full text on
+           click (which marks it read), and the whole section auto-collapses
+           when nothing is unread. The unread count rides the header. -->
+      <section class="messages messages--collapsed" style="display: none">
+        <button type="button" class="messages-toggle" aria-expanded="false">
+          <h1>Messages <span class="messages-unread" style="display: none">0</span></h1>
+          <span class="messages-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="messages-body">
+          <div class="messages-actions">
+            <button
+              class="delete-all-btn"
+              id="delete-all-messages"
+              style="display: none"
+            >
+              Delete All
+            </button>
+          </div>
+          <div class="log-messages">
+            <table class="log-messages-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Message</th>
+                  <th>Time</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Rows populated by JS -->
+              </tbody>
+            </table>
+            <div class="log-pagination" id="messages-pagination"></div>
+          </div>
         </div>
       </section>
 

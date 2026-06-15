@@ -219,6 +219,18 @@
     });
   })();
 
+  // Messages auto-expands on unread (see refreshMessagesUnread); the header is
+  // also a manual toggle so the agent can open it to review already-read notes.
+  (function wireMessagesToggle() {
+    const section = document.querySelector(".messages");
+    const toggle = section?.querySelector(".messages-toggle");
+    if (!section || !toggle) return;
+    toggle.addEventListener("click", () => {
+      const collapsed = section.classList.toggle("messages--collapsed");
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    });
+  })();
+
   (function renderAccountBar() {
     if (!me) return;
     // The account links live inside the settings panel (fall back to the
@@ -753,6 +765,7 @@
   // Must be declared before the log-load calls below (let/const are not
   // hoisted like function declarations, so they'd be in the TDZ otherwise).
   const LOG_PAGE_SIZE = 5;
+  const MSG_PREVIEW_CHARS = 80; // truncate Messages list previews; click to expand
   let callsPage = 0;
   let messagesPage = 0;
 
@@ -1774,23 +1787,51 @@
     if (!tbody) return;
     tbody.innerHTML = "";
     (data || []).forEach((msg) => {
+      const isRead = msg.is_read === 1 || msg.is_read === true;
+      const full = msg.message || "";
+      const truncated = full.length > MSG_PREVIEW_CHARS;
+      const preview = truncated ? full.slice(0, MSG_PREVIEW_CHARS).trimEnd() + "…" : full;
       const tr = document.createElement("tr");
+      tr.className = "msg-row" + (isRead ? "" : " msg-row--unread");
+      tr.dataset.id = msg.id;
       tr.innerHTML = `
-        <td>${S.escapeHtml(msg.message_id || "")}</td>
-        <td>${S.escapeHtml(msg.ref || "")}</td>
         <td>${S.escapeHtml(msg.name || "")}</td>
         <td>${S.escapeHtml(msg.contact || "")}</td>
-        <td>${S.escapeHtml(msg.message || "")}</td>
+        <td class="msg-cell">
+          <span class="msg-preview">${S.escapeHtml(preview)}</span>
+          <span class="msg-full" style="display: none">${S.escapeHtml(full)}</span>
+        </td>
         <td>${msg.created_at ? new Date(msg.created_at).toLocaleString() : ""}</td>
         <td>${isAdmin ? `<button data-id="${msg.id}" class="delete-msg-btn">Delete</button>` : ""}</td>
       `;
+      // Click the row (anywhere but Delete) to expand the full text; the first
+      // open marks it read (server-side, so it syncs to every console/device).
+      tr.addEventListener("click", async (e) => {
+        if (e.target.closest(".delete-msg-btn")) return;
+        const expanded = tr.classList.toggle("msg-expanded");
+        const prev = tr.querySelector(".msg-preview");
+        const fullEl = tr.querySelector(".msg-full");
+        if (prev && fullEl) {
+          prev.style.display = expanded ? "none" : "";
+          fullEl.style.display = expanded ? "" : "none";
+        }
+        if (tr.classList.contains("msg-row--unread")) {
+          tr.classList.remove("msg-row--unread");
+          // Await the mark-read so the unread re-count reads the committed state
+          // (otherwise the badge can re-fetch the stale pre-read count).
+          await window.DB.markMessageRead(msg.id, ref).catch(() => {});
+          refreshMessagesUnread(ref);
+        }
+      });
       tbody.appendChild(tr);
     });
     if (isAdmin) {
       tbody.querySelectorAll(".delete-msg-btn").forEach((btn) => {
-        btn.addEventListener("click", async () => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation(); // don't toggle/expand the row
           await window.DB.deleteMessageById(btn.dataset.id);
           btn.closest("tr").remove();
+          refreshMessagesUnread(ref);
           if (tbody.querySelectorAll("tr").length === 0 && messagesPage > 0) {
             loadMessagesLog(ref, messagesPage - 1);
             return;
@@ -1806,6 +1847,32 @@
     if (isAdmin) {
       const btn = document.getElementById("delete-all-messages");
       if (btn) btn.style.display = (count || 0) > 1 ? "" : "none";
+    }
+    refreshMessagesUnread(ref);
+  }
+
+  // Unread count drives the Messages header badge AND the auto-collapse: the
+  // section opens when something is unread and folds away when the inbox is
+  // clear. Server-side count, so it's consistent across the agent's devices.
+  async function refreshMessagesUnread(ref) {
+    const section = document.querySelector(".messages");
+    if (!section) return;
+    let unread = 0;
+    try {
+      const { data } = await window.DB.unreadMessageCount({ ref });
+      unread = (data && data.unread) || 0;
+    } catch (e) { /* keep prior badge/state on a transient error */ }
+    const badge = section.querySelector(".messages-unread");
+    if (badge) {
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      badge.style.display = unread > 0 ? "" : "none";
+    }
+    // Surface unread by EXPANDING; never auto-collapse mid-session (the agent
+    // may be reading). The section starts collapsed (HTML default) and folds
+    // again on the next fresh load once the inbox is clear.
+    if (unread > 0) {
+      section.classList.remove("messages--collapsed");
+      section.querySelector(".messages-toggle")?.setAttribute("aria-expanded", "true");
     }
   }
 

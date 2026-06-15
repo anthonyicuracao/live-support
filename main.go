@@ -239,6 +239,19 @@ func openDB(path string) (*sql.DB, error) {
 	if _, err := d.Exec(`DELETE FROM push_subscriptions WHERE user_id NOT IN (SELECT id FROM users)`); err != nil {
 		return nil, err
 	}
+	// messages.is_read added after the initial schema — idempotent column add
+	// (CREATE TABLE IF NOT EXISTS can't alter an existing table). Gate on an
+	// explicit column-existence check rather than the ALTER's error, because the
+	// pure-Go SQLite driver returns a non-nil error from "ADD COLUMN ... NOT
+	// NULL" even when it succeeds. On the one boot that adds the column, mark all
+	// pre-existing notes read so the new inbox starts clean — the agent has
+	// already seen them in the old History table; only new notes arrive unread.
+	var hasIsRead int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'is_read'`).Scan(&hasIsRead)
+	if hasIsRead == 0 {
+		_, _ = d.Exec(`ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`)
+		_, _ = d.Exec(`UPDATE messages SET is_read = 1`)
+	}
 	return d, nil
 }
 
@@ -1147,7 +1160,56 @@ func callsHandler(w http.ResponseWriter, r *http.Request) {
 func messagesHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// ?unread=1 → just the count of unread messages for this ref (drives the
+		// console's "collapse Messages when nothing is unread" + header badge).
+		if r.URL.Query().Get("unread") == "1" {
+			ref := r.URL.Query().Get("ref")
+			if ref == "" {
+				errJSON(w, 400, "ref required")
+				return
+			}
+			db, err := dbs.get(ref)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			var n int
+			_ = db.QueryRow("SELECT COUNT(*) FROM messages WHERE ref = ? AND is_read = 0", ref).Scan(&n)
+			writeJSON(w, 200, map[string]int{"unread": n})
+			return
+		}
 		listHandler("messages", "created_at")(w, r)
+	case http.MethodPatch:
+		// PATCH /api/messages/<id>?ref=<ref> — mark a message read (opened).
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) != 3 {
+			errJSON(w, 400, "message id required in path")
+			return
+		}
+		id := parts[2]
+		var tdb *sql.DB
+		if q := r.URL.Query().Get("ref"); q != "" {
+			d, err := dbs.get(q)
+			if err != nil {
+				errJSON(w, 400, err.Error())
+				return
+			}
+			tdb = d
+		} else {
+			tdb, _ = dbs.findByColumn("messages", "id", id)
+		}
+		if tdb == nil {
+			writeJSON(w, 200, map[string]bool{"ok": true}) // nothing to mark
+			return
+		}
+		if _, err := tdb.Exec("UPDATE messages SET is_read = 1 WHERE id = ?", id); err != nil {
+			errJSON(w, 500, err.Error())
+			return
+		}
+		// No refresh broadcast: the clicking console already updated optimistically,
+		// and a reload here would re-collapse the note the agent just expanded to
+		// read. Other consoles pick up the read state on their next list load.
+		writeJSON(w, 200, map[string]bool{"ok": true})
 	case http.MethodPost:
 		var m struct {
 			MessageID string `json:"message_id"`

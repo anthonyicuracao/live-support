@@ -33,14 +33,13 @@ body {
 .auth-user .call h1,
 .auth-user .messages h1,
 .auth-user .logs h1 { margin-top: 0; }
-/* Messages section header (title + Delete All) sits inline. */
-.auth-user > .messages .log-section-header { margin-bottom: 8px; }
-.auth-user > .messages .log-messages { overflow-x: auto; }
-
-/* History: collapsible. The header is a full-width tappable bar; the body
-   hides when collapsed. Chevron points down when expanded, right when not. */
-.auth-user > .logs { padding: 0; }
-.logs-toggle {
+/* Collapsible sections (History + Messages): the header is a full-width
+   tappable bar; the body hides when collapsed. Chevron points down when
+   expanded, right when collapsed. */
+.auth-user > .logs,
+.auth-user > .messages { padding: 0; }
+.logs-toggle,
+.messages-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -52,11 +51,71 @@ body {
   font: inherit;
   text-align: left;
 }
-.logs-toggle h1 { margin: 0; color: #1a202c; } /* button context inherits white otherwise */
-.logs-chevron { color: #94a3b8; font-size: 1.1rem; transition: transform 0.2s ease; }
-.logs--collapsed .logs-chevron { transform: rotate(-90deg); }
-.logs-body { padding: 0 22px 22px; }
-.logs--collapsed .logs-body { display: none; }
+.logs-toggle h1,
+.messages-toggle h1 { margin: 0; color: #1a202c; } /* button context inherits white otherwise */
+.logs-chevron,
+.messages-chevron { color: #94a3b8; font-size: 1.1rem; transition: transform 0.2s ease; }
+.logs--collapsed .logs-chevron,
+.messages--collapsed .messages-chevron { transform: rotate(-90deg); }
+.logs-body,
+.messages-body { padding: 0 22px 22px; }
+.logs--collapsed .logs-body,
+.messages--collapsed .messages-body { display: none; }
+
+/* Messages header: unread count pill next to the title. */
+.messages-unread {
+  display: inline-block;
+  min-width: 20px;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--primary, #7c3aed);
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+  vertical-align: middle;
+}
+.messages-actions { display: flex; justify-content: flex-end; }
+.auth-user > .messages .log-messages { overflow-x: auto; }
+
+/* Messages inbox rows: unread bold, click a row to expand the full note. */
+.msg-row { cursor: pointer; }
+.msg-row:hover { background: #f8fafc; }
+.msg-row--unread td { font-weight: 700; color: #0f172a; }
+/* Fixed column layout so the 5 columns always fit the card (no horizontal
+   scroll) and the message cell can ellipsis its preview. */
+.log-messages-table { table-layout: fixed; width: 100%; }
+.log-messages-table th:nth-child(1), .log-messages-table td:nth-child(1) { width: 15%; }
+.log-messages-table th:nth-child(2), .log-messages-table td:nth-child(2) { width: 21%; }
+.log-messages-table th:nth-child(3), .log-messages-table td:nth-child(3) { width: 35%; }
+.log-messages-table th:nth-child(4), .log-messages-table td:nth-child(4) { width: 15%; }
+.log-messages-table th:nth-child(5), .log-messages-table td:nth-child(5) { width: 14%; }
+.log-messages-table td:nth-child(1),
+.log-messages-table td:nth-child(2) { word-break: break-word; }
+/* Compact delete button so it fits its column without clipping. */
+.log-messages-table .delete-msg-btn {
+  padding: 4px 9px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+/* Collapsed preview: one clean line, ellipsis if it overflows. Expanded: the
+   full note wraps. */
+.msg-row:not(.msg-expanded) .msg-preview {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-cell .msg-full { white-space: pre-wrap; word-break: break-word; }
+/* index.css hides table columns 1-2 globally (they were the old ID/Source
+   columns). The Messages inbox now leads with Name/Email — show them, and
+   don't title-case the message body (nth-child(3) is the message now). */
+.log-messages-table th:nth-child(1),
+.log-messages-table td:nth-child(1),
+.log-messages-table th:nth-child(2),
+.log-messages-table td:nth-child(2) { display: table-cell !important; }
+.log-messages-table td:nth-child(3) { text-transform: none; }
 
 /* Messages: on the agent console the IM is a stacked card at the top (the
    guest page keeps the docked bubble from index.css — auth.css is agent-only).
@@ -365,9 +424,11 @@ body {
 @media (max-width: 560px) {
   .auth-user { padding: 16px 10px 96px; }
   .auth-user > .greeting,
-  .auth-user > .call,
-  .auth-user > .messages { padding: 16px; border-radius: 14px; }
-  .auth-user > .logs { border-radius: 14px; }
-  .logs-toggle { padding: 16px; }
-  .logs-body { padding: 0 16px 16px; }
+  .auth-user > .call { padding: 16px; border-radius: 14px; }
+  .auth-user > .logs,
+  .auth-user > .messages { border-radius: 14px; }
+  .logs-toggle,
+  .messages-toggle { padding: 16px; }
+  .logs-body,
+  .messages-body { padding: 0 16px 16px; }
 }
