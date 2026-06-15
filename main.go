@@ -1375,6 +1375,7 @@ func onlineHandler(w http.ResponseWriter, r *http.Request) {
 		if !dbs.exists(ref) {
 			writeJSON(w, 200, map[string]interface{}{
 				"online": false, "count": 0, "withCamera": 0, "withMic": 0,
+				"reachable": false, "reachableCount": 0,
 			})
 			return
 		}
@@ -1416,8 +1417,42 @@ func onlineHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		rows.Close()
 	}
+
+	// Also surface agents reachable via Web Push even when no console is live:
+	// durable-available ("until Pause/logout"), active account, with a push
+	// subscription, and seen within the discovery freshness window (same gate
+	// as /api/agents/available). Lets a widget light up "talk to a live agent"
+	// knowing the ring will wake a closed laptop, not just an open tab.
+	reachable := 0
+	freshCutoff := ""
+	if window := discoveryFreshness(); window > 0 {
+		freshCutoff = time.Now().UTC().Add(-window).Format(time.RFC3339)
+	}
+	for _, d := range targets {
+		var n int
+		var err error
+		if freshCutoff != "" {
+			err = d.QueryRow(
+				`SELECT COUNT(*) FROM agent_availability a
+				 JOIN users u ON u.id = a.user_id AND u.active = 1
+				 WHERE a.available = 1 AND a.updated_at > ?
+				   AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = a.user_id)`,
+				freshCutoff).Scan(&n)
+		} else {
+			err = d.QueryRow(
+				`SELECT COUNT(*) FROM agent_availability a
+				 JOIN users u ON u.id = a.user_id AND u.active = 1
+				 WHERE a.available = 1
+				   AND EXISTS (SELECT 1 FROM push_subscriptions p WHERE p.user_id = a.user_id)`).Scan(&n)
+		}
+		if err == nil {
+			reachable += n
+		}
+	}
+
 	writeJSON(w, 200, map[string]interface{}{
 		"online": count > 0, "count": count, "withCamera": withCamera, "withMic": withMic,
+		"reachable": reachable > 0, "reachableCount": reachable,
 	})
 }
 
