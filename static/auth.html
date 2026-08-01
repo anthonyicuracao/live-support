@@ -101,7 +101,12 @@
             <input type="checkbox" id="availability-toggle" disabled />
             <span class="availability__slider"></span>
           </label>
-          <span class="availability__label">Available for calls</span>
+          <!-- Text is written by auth.js from the modality toggles below:
+               "Available for chat, audio and video", "Available for chat", and
+               so on. A fixed "Available for calls" was wrong twice over — it
+               named a modality the agent may have turned off, and it never
+               mentioned chat at all. -->
+          <span class="availability__label" id="availability-label">Available</span>
           <span class="availability__state" id="availability-state">🛑</span>
         </div>
         <!-- Web Push status: shows whether background call alerts are armed, with

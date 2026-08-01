@@ -579,11 +579,27 @@
     };
   }
 
+  // "Available for chat, audio and video" — driven by what is actually
+  // selected, so the switch never claims a modality the agent turned off, and
+  // never omits chat.
+  function availabilityLabelText(m) {
+    const on = [];
+    if (m.chat) on.push("chat");
+    if (m.audio) on.push("audio");
+    if (m.video) on.push("video");
+    if (!on.length) return "Not accepting anything";
+    const list =
+      on.length === 1 ? on[0] : on.slice(0, -1).join(", ") + " and " + on[on.length - 1];
+    return `Available for ${list}`;
+  }
+
   function renderAvailabilityUI() {
     if (availabilityInput) availabilityInput.checked = isAvailable;
     if (availabilityStateEl) {
       availabilityStateEl.textContent = isAvailable ? "✅" : "🛑";
     }
+    const labelEl = document.getElementById("availability-label");
+    if (labelEl) labelEl.textContent = availabilityLabelText(currentModes());
     // The mode choice is locked while Available for the same reason it always
     // was: permissions are acquired at Go-Available for the picked modes, so
     // changing them mid-shift would need a re-acquire the UI has no place for.
@@ -607,6 +623,7 @@
     if (!el) return;
     el.addEventListener("change", () => {
       modes = currentModes();
+      renderAvailabilityUI(); // keep the "Available for …" text honest
       if (el === videoModeInput) {
         wantsVideo = videoModeInput.checked;
         saveVideoPref(wantsVideo);
