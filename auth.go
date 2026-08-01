@@ -153,6 +153,17 @@ type User struct {
 	// is populated only by listUsers (the admin view); the auth-path scans
 	// leave it false.
 	ResetRequested bool
+	// Sessions counts the login sessions this user currently holds, and
+	// LastLoginAt is when they most recently signed in (0 = never). Both are
+	// populated only by listUsers.
+	//
+	// These exist because sessions no longer expire on their own. The safety of
+	// a permanent session rests on an admin being able to SEE that someone is
+	// signed in and revoke it — before this, the users page showed only
+	// Active/Inactive, so a standing session was invisible from the one screen
+	// meant to govern it.
+	Sessions    int
+	LastLoginAt int64
 }
 
 // AuthSession is a server-side login session (distinct from the presence
@@ -191,10 +202,17 @@ func countUsers(db *sql.DB) (int, error) {
 	return n, err
 }
 
+// listUsers powers the admin users page. The correlated session count is what
+// makes a standing session visible; the expires_at guard keeps an expired row
+// that the sweeper has not reached yet from being counted as signed in.
 func listUsers(db *sql.DB) ([]User, error) {
+	now := time.Now().Unix()
 	rows, err := db.Query(
-		`SELECT id, username, password_hash, role, must_change_pw, active, reset_requested_at
-		 FROM users ORDER BY username`)
+		`SELECT u.id, u.username, u.password_hash, u.role, u.must_change_pw, u.active,
+		        u.reset_requested_at, u.last_login_at,
+		        (SELECT COUNT(*) FROM auth_sessions s
+		          WHERE s.user_id = u.id AND (s.expires_at = ? OR s.expires_at > ?)) AS sessions
+		 FROM users u ORDER BY u.username`, sessionNever, now)
 	if err != nil {
 		return nil, err
 	}
@@ -202,13 +220,18 @@ func listUsers(db *sql.DB) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var (
-			u   User
-			req sql.NullInt64
+			u    User
+			req  sql.NullInt64
+			last sql.NullInt64
 		)
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.MustChangePW, &u.Active, &req); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.MustChangePW, &u.Active,
+			&req, &last, &u.Sessions); err != nil {
 			return nil, err
 		}
 		u.ResetRequested = req.Valid
+		if last.Valid {
+			u.LastLoginAt = last.Int64
+		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -287,13 +310,35 @@ func activeAdminCount(db *sql.DB) int {
 
 // ───────────────────────── store: auth sessions ────────────────────────────
 
+// sessionNever is the expires_at value for a session that does not expire.
+//
+// Zero rather than a far-future timestamp on purpose: a sentinel like year 9999
+// is indistinguishable from a genuine long expiry, so every later reader has to
+// guess whether it meant "never" or "a very long session". Zero cannot be
+// mistaken for a real deadline, and it sorts below every real one, which keeps
+// the `expires_at < ?` style of query honest as long as it is guarded.
+const sessionNever int64 = 0
+
+// sessionExpired reports whether an expires_at has passed. The guard is the
+// whole point: a never-expiring session must never satisfy it.
+func sessionExpired(expiresAt int64, now int64) bool {
+	return expiresAt != sessionNever && now >= expiresAt
+}
+
+// createAuthSession mints a session. A ttl of 0 means "never expires" — the
+// owner-agent case, where someone is rung once a month and must still be signed
+// in when it happens. See PERSISTENT-LOGIN-PLAN.md.
 func createAuthSession(db *sql.DB, userID int64, ttl time.Duration) (rawToken string, csrf string, err error) {
 	rawToken = randToken()
 	csrf = randToken()
 	now := time.Now()
+	expires := sessionNever
+	if ttl > 0 {
+		expires = now.Add(ttl).Unix()
+	}
 	_, err = db.Exec(
 		`INSERT INTO auth_sessions(id, user_id, csrf_token, created_at, expires_at) VALUES(?, ?, ?, ?, ?)`,
-		hashToken(rawToken), userID, csrf, now.Unix(), now.Add(ttl).Unix(),
+		hashToken(rawToken), userID, csrf, now.Unix(), expires,
 	)
 	if err != nil {
 		return "", "", err
@@ -302,7 +347,9 @@ func createAuthSession(db *sql.DB, userID int64, ttl time.Duration) (rawToken st
 }
 
 // lookupAuthSession resolves a raw cookie token to its session and user,
-// rejecting expired sessions and inactive users.
+// rejecting expired sessions and inactive users. A session with expires_at = 0
+// never expires; only revocation (logout, delete, deactivate, password reset)
+// ends it.
 func lookupAuthSession(db *sql.DB, rawToken string) (*AuthSession, *User, error) {
 	var s AuthSession
 	err := db.QueryRow(
@@ -314,7 +361,12 @@ func lookupAuthSession(db *sql.DB, rawToken string) (*AuthSession, *User, error)
 		}
 		return nil, nil, err
 	}
-	if time.Now().Unix() >= s.ExpiresAt {
+	if sessionExpired(s.ExpiresAt, time.Now().Unix()) {
+		// An expiring session that has run out is also an agent who can no
+		// longer answer, so drop the availability claim with it. Otherwise the
+		// ring path keeps waking someone who will land on a login page with the
+		// call already gone.
+		clearAvailability(db, s.UserID)
 		_, _ = db.Exec(`DELETE FROM auth_sessions WHERE id = ?`, s.ID)
 		return nil, nil, errNotFound
 	}
@@ -329,8 +381,22 @@ func deleteAuthSession(db *sql.DB, rawToken string) {
 	_, _ = db.Exec(`DELETE FROM auth_sessions WHERE id = ?`, hashToken(rawToken))
 }
 
+// deleteUserAuthSessions revokes every session a user holds — "sign out
+// everywhere". This is the admin's one-click answer to a session they do not
+// like the look of, without having to delete the account or reset the password.
+func deleteUserAuthSessions(db *sql.DB, userID int64) {
+	_, _ = db.Exec(`DELETE FROM auth_sessions WHERE user_id = ?`, userID)
+	clearAvailability(db, userID)
+}
+
+// sweepAuthSessions prunes sessions that have genuinely run out. The
+// expires_at != 0 guard is what keeps permanent sessions alive: without it the
+// hourly sweeper would delete every one of them, since 0 is less than any
+// current timestamp.
 func sweepAuthSessions(db *sql.DB) {
-	_, _ = db.Exec(`DELETE FROM auth_sessions WHERE expires_at < ?`, time.Now().Unix())
+	_, _ = db.Exec(
+		`DELETE FROM auth_sessions WHERE expires_at != ? AND expires_at < ?`,
+		sessionNever, time.Now().Unix())
 }
 
 // ───────────────────────── store: invites ──────────────────────────────────
@@ -677,7 +743,10 @@ func issueCSRF(w http.ResponseWriter, secure bool) string {
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   3600,
+		// A day, not an hour. This is re-issued on every render that needs it,
+		// so the only thing a short lifetime achieved was failing the submit of
+		// a login or user-admin form that had been open for an hour.
+		MaxAge: 24 * 3600,
 	})
 	return tok
 }
@@ -735,10 +804,35 @@ type pageRenderer struct {
 	pages map[string]*template.Template
 }
 
+// loginAgo renders a unix timestamp as a coarse "how long ago". Coarse on
+// purpose: the admin reading the users table wants to know whether a session is
+// from this morning or from March, not the minute it started.
+func loginAgo(ts int64) string {
+	if ts <= 0 {
+		return "never"
+	}
+	d := time.Since(time.Unix(ts, 0))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return time.Unix(ts, 0).UTC().Format("2 Jan 2006")
+	}
+}
+
+var templateFuncs = template.FuncMap{"loginAgo": loginAgo}
+
 func loadTemplates() (*pageRenderer, error) {
 	t := &pageRenderer{pages: make(map[string]*template.Template)}
 	for _, name := range pageTemplates {
-		tmpl, err := template.ParseFS(templatesFS, "templates/layout.tmpl", "templates/"+name)
+		tmpl, err := template.New("layout.tmpl").Funcs(templateFuncs).
+			ParseFS(templatesFS, "templates/layout.tmpl", "templates/"+name)
 		if err != nil {
 			return nil, err
 		}
@@ -768,17 +862,25 @@ type authApp struct {
 	inviteTTL  time.Duration
 	resetTTL   time.Duration
 
-	adminUsername  string
-	adminInitialPW string
-	ssoSecret      string   // shared secret for platform SSO links
-	corsOrigins    []string // browser origins allowed to read /provision cross-origin
-	throttle       *loginThrottle
-	bootstrapped   sync.Map // ref -> true, once the tenant has been checked
+	adminUsername   string
+	adminInitialPW  string
+	ssoSecret       string   // shared secret for platform SSO links
+	corsOrigins     []string // browser origins allowed to read /provision cross-origin
+	throttle        *loginThrottle
+	bootstrapped    sync.Map // ref -> true, once the tenant has been checked
+	cookieRefreshed sync.Map // auth_session id -> time.Time of last cookie re-send
 }
 
+// envHours reads an hours-valued setting.
+//
+// Zero is ACCEPTED and meaningful: for SESSION_TTL_HOURS it means "never
+// expires". Previously the guard was `n > 0`, which silently swallowed 0 and
+// returned the default — so there was no way to express a permanent session at
+// all, and an operator setting 0 got 168 hours without being told. Negative and
+// unparseable values are still rejected, because neither has a meaning.
 func envHours(key string, def int) time.Duration {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return time.Duration(n) * time.Hour
 		}
 	}
@@ -811,12 +913,14 @@ func newAuthApp() (*authApp, error) {
 		favicon = "/public/favicon.svg"
 	}
 	a := &authApp{
-		tmpl:           tmpl,
-		secure:         os.Getenv("SECURE_COOKIES") == "true",
-		siteName:       siteName,
-		primary:        primary,
-		favicon:        favicon,
-		sessionTTL:     envHours("SESSION_TTL_HOURS", 168),
+		tmpl:     tmpl,
+		secure:   os.Getenv("SECURE_COOKIES") == "true",
+		siteName: siteName,
+		primary:  primary,
+		favicon:  favicon,
+		// 0 = never expires. An agent stays signed in until they log out or an
+		// admin revokes them; set SESSION_TTL_HOURS to restore a fixed window.
+		sessionTTL:     envHours("SESSION_TTL_HOURS", 0),
 		inviteTTL:      envHours("INVITE_TTL_HOURS", 72),
 		resetTTL:       envHours("RESET_TTL_HOURS", 24),
 		adminUsername:  adminUsername,
@@ -915,6 +1019,7 @@ func (a *authApp) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /users/deactivate", a.adminCSRF(a.deactivate))
 	mux.Handle("POST /users/reset", a.adminCSRF(a.resetUser))
 	mux.Handle("POST /users/delete", a.adminCSRF(a.deleteUser))
+	mux.Handle("POST /users/signout", a.adminCSRF(a.signOutUser))
 }
 
 // ---- request context ----
@@ -999,6 +1104,7 @@ func (a *authApp) requireAuth(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/account/password", http.StatusSeeOther)
 			return
 		}
+		a.refreshSessionCookie(w, r, info)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authKey, info)))
 	})
 }
@@ -1013,8 +1119,46 @@ func (a *authApp) authedJSON(h http.HandlerFunc) http.Handler {
 			errJSON(w, 401, "not signed in")
 			return
 		}
+		a.refreshSessionCookie(w, r, info)
 		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authKey, info)))
 	})
+}
+
+// cookieRefreshEvery throttles how often an authenticated request re-sends the
+// session cookie. The only job is to restart the browser's 400-day cap well
+// before it expires, so daily is generous by three orders of magnitude.
+const cookieRefreshEvery = 24 * time.Hour
+
+// refreshSessionCookie re-sends the session cookie on activity so a permanent
+// session is not quietly ended by the browser's cookie-lifetime cap.
+//
+// Hung on BOTH middlewares deliberately: a console can stay open for months
+// without ever loading an HTML page, so refreshing only on page render would
+// miss exactly the long-lived agent this is for.
+//
+// The throttle is in-memory, so a restart just means the next request refreshes
+// again — an extra Set-Cookie header, which costs nothing. Correctness never
+// depends on this map surviving.
+func (a *authApp) refreshSessionCookie(w http.ResponseWriter, r *http.Request, info *authInfo) {
+	if info == nil || info.sess == nil {
+		return
+	}
+	now := time.Now()
+	if last, ok := a.cookieRefreshed.Load(info.sess.ID); ok {
+		if t, ok := last.(time.Time); ok && now.Sub(t) < cookieRefreshEvery {
+			return
+		}
+	}
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return
+	}
+	ref, raw, ok := decodeSessionCookie(c.Value)
+	if !ok {
+		return
+	}
+	a.setSessionCookie(w, ref, raw)
+	a.cookieRefreshed.Store(info.sess.ID, now)
 }
 
 func (a *authApp) requireRole(role string, next http.Handler) http.Handler {
@@ -1043,6 +1187,23 @@ func passwordChangeAllowed(path string) bool {
 	return path == "/account/password" || path == "/logout" || path == "/api/me"
 }
 
+// cookieMaxAgeCap is the longest Max-Age worth sending: Chrome clamps cookie
+// lifetimes to 400 days and silently shortens anything longer. So a permanent
+// server session paired with a write-once cookie would still evict the agent at
+// ~13 months. We send the cap and RE-SEND it on activity (see refreshSessionCookie),
+// which restarts the 400-day clock long before it can run out. The limit is the
+// browser's, not a policy of ours.
+const cookieMaxAgeCap = 400 * 24 * 60 * 60
+
+// sessionCookieMaxAge is the Max-Age for the session cookie: the browser cap for
+// a permanent session, otherwise the session's own lifetime.
+func (a *authApp) sessionCookieMaxAge() int {
+	if a.sessionTTL <= 0 {
+		return cookieMaxAgeCap
+	}
+	return int(a.sessionTTL.Seconds())
+}
+
 func (a *authApp) setSessionCookie(w http.ResponseWriter, ref, raw string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
@@ -1051,7 +1212,7 @@ func (a *authApp) setSessionCookie(w http.ResponseWriter, ref, raw string) {
 		HttpOnly: true,
 		Secure:   a.secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(a.sessionTTL.Seconds()),
+		MaxAge:   a.sessionCookieMaxAge(),
 	})
 }
 
@@ -1644,6 +1805,34 @@ func (a *authApp) createInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	link := a.requestBaseURL(r) + "/invite?ref=" + url.QueryEscape(info.ref) + "&t=" + raw
 	a.renderUsers(w, r, link, "")
+}
+
+// signOutUser revokes every session a user holds, without touching the account.
+//
+// The counterpart to sessions that never expire: an admin who sees a standing
+// session they do not like should be able to end it directly, rather than
+// having to deactivate the account or reset the password to get the same effect
+// as a side-effect. Signing yourself out here is allowed and simply logs you
+// out, so no self-target guard — unlike deactivate/delete, this is reversible
+// by signing back in, and there is no way to strand the tenant without an admin.
+func (a *authApp) signOutUser(w http.ResponseWriter, r *http.Request) {
+	info := authFrom(r.Context())
+	id, err := strconv.ParseInt(r.PostFormValue("user_id"), 10, 64)
+	if err != nil {
+		http.Redirect(w, r, "/users", http.StatusSeeOther)
+		return
+	}
+	if _, err := userByID(info.db, id); err != nil {
+		http.Redirect(w, r, "/users", http.StatusSeeOther)
+		return
+	}
+	deleteUserAuthSessions(info.db, id)
+	if id == info.user.ID {
+		a.clearSessionCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/users", http.StatusSeeOther)
 }
 
 func (a *authApp) deactivate(w http.ResponseWriter, r *http.Request) {

@@ -33,19 +33,33 @@
 
 <section class="card" style="margin-top:16px">
   <table>
-    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Signed in</th><th></th></tr></thead>
     <tbody>
     {{range .Users}}
       <tr>
         <td>{{.Username}}</td>
         <td>{{.Role}}</td>
         <td>{{if .Active}}Active{{else}}Inactive{{end}}{{if .MustChangePW}} · pending first login{{end}}{{if .ResetRequested}} · <strong>reset requested</strong>{{end}}</td>
+        {{/* Sessions no longer expire on their own, so this column is how a
+             standing session becomes visible — and visible is what makes it
+             safely revocable from the button beside it. */}}
+        <td>
+          {{if .Sessions}}<strong>Yes</strong>{{if gt .Sessions 1}} · {{.Sessions}} sessions{{end}}{{else}}No{{end}}
+          {{if .LastLoginAt}}<br><small>last login {{loginAgo .LastLoginAt}}</small>{{end}}
+        </td>
         <td>
           <form method="POST" action="/users/reset" class="inline">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">
             <input type="hidden" name="user_id" value="{{.ID}}">
             <button class="btn ghost" type="submit">Reset password</button>
           </form>
+          {{if .Sessions}}
+          <form method="POST" action="/users/signout" class="inline">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <input type="hidden" name="user_id" value="{{.ID}}">
+            <button class="btn ghost" type="submit">Sign out everywhere</button>
+          </form>
+          {{end}}
           {{if .Active}}
           <form method="POST" action="/users/deactivate" class="inline">
             <input type="hidden" name="csrf" value="{{$.CSRF}}">

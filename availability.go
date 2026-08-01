@@ -66,9 +66,16 @@ func clearAvailability(db *sql.DB, userID int64) {
 
 // userIsAvailable reports the durable availability gate for a user. Used by the
 // ring handler so Pause/logout takes effect server-side immediately.
+//
+// The users JOIN mirrors what /api/agents/available already enforces. Discovery
+// and the ring gate must agree, and of the two the ring gate is the one that
+// actually wakes a phone — it has no business being the laxer check.
 func userIsAvailable(db *sql.DB, userID int64) bool {
 	var avail int
-	err := db.QueryRow(`SELECT available FROM agent_availability WHERE user_id = ?`, userID).Scan(&avail)
+	err := db.QueryRow(
+		`SELECT a.available FROM agent_availability a
+		 JOIN users u ON u.id = a.user_id AND u.active = 1
+		 WHERE a.user_id = ?`, userID).Scan(&avail)
 	return err == nil && avail == 1
 }
 

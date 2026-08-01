@@ -26,6 +26,49 @@
     if (mainEl)    mainEl.style.display = "";
   }
 
+  // ─── Session loss must never be silent ─────────────────────────────────
+  // The failure this exists to kill: the session ends, the console keeps
+  // rendering "Available", WS presence keeps the agent looking live, and every
+  // authed call 401s unnoticed — because a 401 is a SUCCESSFUL fetch and does
+  // not throw. The availability touch stops, updated_at freezes, and about a
+  // day later discoveryFreshness ages the agent out of guest discovery while
+  // their screen still says they are on duty. They find out at the next reload.
+  //
+  // So: one place decides the session is gone, it latches, and it is loud.
+  let sessionLost = false;
+
+  // Self-contained rather than reusing the nested redirectToLogin below: this
+  // runs from fetch callbacks anywhere in the file, so it must not depend on
+  // that function's scope. Preserves ?ref= the same way it does.
+  function loginURL() {
+    const ref = new URLSearchParams(window.location.search).get("ref");
+    return "/login" + (ref ? "?ref=" + encodeURIComponent(ref) : "");
+  }
+
+  function onSessionLost() {
+    if (sessionLost) return; // latch — one redirect, one message
+    sessionLost = true;
+    showDenied(
+      "Your session has ended, so you are no longer reachable by visitors. " +
+      "Signing you back in…"
+    );
+    // Give the message a beat to be read, then go somewhere that can fix it.
+    setTimeout(() => { window.location.href = loginURL(); }, 1500);
+  }
+
+  // guardAuth wraps an authed fetch response. Returns true when the response is
+  // usable; false means the session is gone and the caller should stop.
+  // Every authed fetch in this file goes through it — a new endpoint that
+  // forgets to is exactly how the silent failure came back.
+  function guardAuth(resp) {
+    if (!resp) return false;          // network error — caller decides
+    if (resp.status === 401 || resp.status === 403) {
+      onSessionLost();
+      return false;
+    }
+    return resp.ok;
+  }
+
   // ─── One-time passcode gate (optional) ─────────────────────────────────
   // When the server is started with AGENT_PASSCODE set, agents must enter the
   // code once per browser before the dashboard is revealed. The code is
@@ -307,7 +350,7 @@
   // it could otherwise race a quick Pause click and revive availability.
   async function postAvailability(touchOnly) {
     try {
-      await fetch("/api/availability", {
+      const resp = await fetch("/api/availability", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -320,8 +363,16 @@
           onlineSince: presenceData.online_since,
         }),
       });
+      // A 401 here is the single most consequential failure in the console: it
+      // means this touch did not land, so updated_at stops moving and the agent
+      // silently ages out of guest discovery while still showing Available.
+      // guardAuth turns it into a visible signed-out state.
+      guardAuth(resp);
     } catch (e) {
-      // Best effort — live WS presence still covers open-tab callability.
+      // A genuine network error is transient and self-correcting — live WS
+      // presence still covers open-tab callability, and the next touch retries.
+      // Deliberately NOT treated as session loss: a flaky wifi moment must not
+      // sign an agent out.
     }
   }
 
@@ -761,6 +812,35 @@
 
   const heartbeatTimer = S.setupHeartbeat(sessionId);
 
+  // ─── Session revalidation ──────────────────────────────────────────────
+  // /api/me was checked once, at page load, and never again — so a console left
+  // open for a week had no way to learn its session had ended. Sessions no
+  // longer expire on their own, but they are still revoked (admin sign-out,
+  // deactivate, password reset), and an agent must find out promptly rather
+  // than at the next hard reload.
+  //
+  // Skipped under the dev bypass, which has no server session to validate.
+  const SESSION_RECHECK_MS = 5 * 60 * 1000;
+
+  async function revalidateSession() {
+    if (devBypass || sessionLost) return;
+    try {
+      guardAuth(await fetch("/api/me"));
+    } catch (e) {
+      // Offline: not session loss. The next tick or a refocus will settle it.
+    }
+  }
+
+  const sessionRecheckTimer = setInterval(revalidateSession, SESSION_RECHECK_MS);
+
+  // A laptop reopened after a week should find out immediately, not up to five
+  // minutes later — that window is exactly when an agent believes they are
+  // reachable and is not.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") revalidateSession();
+  });
+  window.addEventListener("focus", revalidateSession);
+
   // ─── Pagination state ──────────────────────────────────────────────────
   // Must be declared before the log-load calls below (let/const are not
   // hoisted like function declarations, so they'd be in the TDZ otherwise).
@@ -1061,6 +1141,7 @@
     if (unloadDone) return;
     unloadDone = true;
     clearInterval(heartbeatTimer);
+    clearInterval(sessionRecheckTimer);
     S.updateSessionStatus(sessionId, "offline");
     if (presenceChannel) presenceChannel.unsubscribe();
     if (inboxChannel) inboxChannel.unsubscribe();

@@ -627,7 +627,69 @@ func (h *Hub) dropConn(c *Conn) {
 	}
 }
 
+// wsSessionCheckEvery is how often an agent's WebSocket re-checks that its login
+// session still exists.
+const wsSessionCheckEvery = 60 * time.Second
+
+// wsSessionToken pulls the login session out of the handshake request, if there
+// is one. Cookies ride the WebSocket handshake like any other request, so this
+// needs no protocol of its own.
+//
+// A guest has no cookie and gets ok=false — guests are unauthenticated by
+// design and this must not change that.
+func wsSessionToken(r *http.Request) (ref, raw string, ok bool) {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return "", "", false
+	}
+	ref, raw, ok = decodeSessionCookie(c.Value)
+	if !ok {
+		return "", "", false
+	}
+	db, err := dbs.get(ref)
+	if err != nil {
+		return "", "", false
+	}
+	if _, _, err := lookupAuthSession(db, raw); err != nil {
+		return "", "", false
+	}
+	return ref, raw, true
+}
+
+// watchWSSession closes an agent's socket once their session stops resolving.
+//
+// Without this, WS presence outlives the session indefinitely: the socket was
+// never authenticated, so an agent whose session had been revoked kept showing
+// as live to guests, and their console kept looking signed in, while every
+// authed HTTP call 401ed. Presence claiming an agent is reachable when the
+// server will refuse everything they do is the lie this closes.
+//
+// Only connections that arrived WITH a valid session are watched. A guest
+// socket has no session to lose and is left alone.
+func watchWSSession(ctx context.Context, cancel context.CancelFunc, ref, raw string) {
+	t := time.NewTicker(wsSessionCheckEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			db, err := dbs.get(ref)
+			if err != nil {
+				continue // transient tenant-DB problem is not session loss
+			}
+			if _, _, err := lookupAuthSession(db, raw); err != nil {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 func wsHandler(w http.ResponseWriter, r *http.Request) {
+	// Resolved BEFORE the upgrade, while it is still an ordinary request.
+	authRef, authRaw, authed := wsSessionToken(r)
+
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Same-origin app; allow any origin so it also works behind proxies.
 		OriginPatterns: []string{"*"},
@@ -644,6 +706,10 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	if authed {
+		go watchWSSession(ctx, cancel, authRef, authRaw)
+	}
 
 	// Writer goroutine
 	go func() {
