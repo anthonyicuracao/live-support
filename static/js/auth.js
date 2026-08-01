@@ -2460,18 +2460,16 @@
         renderRoster();
         renderDockUnread();
       }
-      // Strongest signal the page is allowed to use. Skipped entirely when the
-      // agent is already looking at THIS thread — they have seen it, so a chime
-      // would only be telling them what is on screen.
-      const looking = document.visibilityState === "visible" && document.hasFocus()
-        && activePeerId === cid && !section.classList.contains("im-collapsed");
-      if (!looking) {
-        S.notify({
-          title: t.name || "New message",
-          body: (data.message && data.message.body) || "",
-          tag: "conv-" + cid,
-        });
-      }
+      // Every arrival is announced, including into a thread that is open on
+      // screen. Suppressing "you are already looking at it" is a bet that
+      // looking means seeing, and on a support console that bet is wrong often
+      // enough to matter — an agent mid-reply to one visitor is not watching
+      // the others. Under-alerting costs more here than a redundant blip.
+      S.notify({
+        title: t.name || "New message",
+        body: (data.message && data.message.body) || "",
+        tag: "conv-" + cid,
+      });
     }
 
     // open(): show a conversation thread and its transcript. The agent side of

@@ -1205,12 +1205,9 @@
           renderDockUnread();
         }
         renderMessages();
-        // Same chain as the console. Skipped when the visitor is plainly
-        // looking at the open dock — they can see the reply arrive.
-        const looking = document.visibilityState === "visible" && document.hasFocus() && !collapsed;
-        if (!looking) {
-          S.notify({ title: t.name || "Live Support", body: data.body || "", tag: "conv-" + data.cid });
-        }
+        // Same chain as the console, and announced on every arrival for the
+        // same reason.
+        S.notify({ title: (ct && ct.name) || "Live Support", body: data.body || "", tag: "conv-" + data.cid });
         return;
       }
       if (!data.fromId || !data.text) return;
