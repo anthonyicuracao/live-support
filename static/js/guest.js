@@ -1199,11 +1199,18 @@
         maybeMarkRead(ct);
         activeAdminId = data.cid;
         S.showSection(".im");
-        if (section.classList.contains("im-collapsed")) {
+        const collapsed = section.classList.contains("im-collapsed");
+        if (collapsed) {
           unread += 1;
           renderDockUnread();
         }
         renderMessages();
+        // Same chain as the console. Skipped when the visitor is plainly
+        // looking at the open dock — they can see the reply arrive.
+        const looking = document.visibilityState === "visible" && document.hasFocus() && !collapsed;
+        if (!looking) {
+          S.notify({ title: t.name || "Live Support", body: data.body || "", tag: "conv-" + data.cid });
+        }
         return;
       }
       if (!data.fromId || !data.text) return;

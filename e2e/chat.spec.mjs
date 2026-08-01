@@ -209,11 +209,21 @@ async function textsOf(page, selector) {
     // lazily inside a message handler — never a gesture — produced no blip and
     // no error. The agent has clicked by now (sign-in, availability), so it
     // must be running.
+    // Sticky activation is the whole mechanism, and both surfaces already have
+    // the interaction that grants it: the agent MUST toggle Available, the
+    // visitor MUST click Chat. So audio should be unlocked on both without
+    // anything extra being asked of anyone.
     const audio = await agent.evaluate(() => window.Shared?.noticeState?.() ?? "no Shared");
     check(
-      "notice audio is unlocked on the console",
+      "toggling Available unlocks audio on the console",
       audio === "running",
       `AudioContext state is ${audio} — a notice would be silent`
+    );
+    const guestAudio = await guest.evaluate(() => window.Shared?.noticeState?.() ?? "no Shared");
+    check(
+      "clicking Chat unlocks audio for the visitor",
+      guestAudio === "running",
+      `AudioContext state is ${guestAudio}`
     );
 
     // ── delivery ticks ───────────────────────────────────────────────────
@@ -327,6 +337,32 @@ async function textsOf(page, selector) {
       "audio is locked again after a reload, until the agent interacts",
       audioAfterReload !== "running",
       `state is ${audioAfterReload} — expected not-running before any gesture`
+    );
+
+    // The regression this pins is the one Ron actually hit: a chime for a
+    // message that had arrived minutes earlier, firing on his next keystroke.
+    //
+    // Cause was that resume() is asynchronous — the old code kicked it off and
+    // then scheduled the note anyway. Scheduling on a suspended context does not
+    // fail, it QUEUES, and the queue drains the moment the gesture resumes it.
+    // So the sound was real, correctly generated, and attached to the wrong
+    // moment entirely.
+    //
+    // Asserting playNotice() reports false while suspended is what proves
+    // nothing was handed to the audio clock to replay later.
+    const queued = await agent.evaluate(() => window.Shared.playNotice());
+    check(
+      "a locked context is never scheduled onto (no chime replays on the next keystroke)",
+      queued === false,
+      `playNotice() returned ${queued} while the context was ${audioAfterReload}`
+    );
+
+    // And with audio unavailable the alert still has to land somewhere.
+    const fallback = await agent.evaluate(() => window.Shared.notify({ title: "t", body: "b" }));
+    check(
+      "with audio locked the alert falls back rather than vanishing",
+      fallback === "notification" || fallback === "badge",
+      `notify() resolved to ${fallback}`
     );
 
     // A deliberately-offline page logs network failures; those are the test

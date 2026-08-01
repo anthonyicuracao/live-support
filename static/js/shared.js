@@ -633,15 +633,24 @@ window.Shared = (() => {
 
   function playNotice() {
     try {
-      if (!noticeCtx) unlockNotice();
+      // Deliberately does NOT create the context. Construction belongs to the
+      // gesture handler, because an AudioContext built outside one may come up
+      // already "running" in permissive browsers — which would let an arriving
+      // message manufacture its own permission and make the one sound the
+      // policy exists to prevent: unannounced noise on a page nobody touched.
       if (!noticeCtx) return false;
-      if (noticeCtx.state === "suspended") {
-        // Best effort: this succeeds only if a gesture already unlocked it.
-        noticeCtx.resume();
-        if (noticeCtx.state === "suspended") return false;
-      }
-      // Never schedule in the past — a suspended-then-resumed clock can lag.
-      const now = Math.max(noticeCtx.currentTime, 0) + 0.01;
+      // NEVER schedule on a context that is not already running.
+      //
+      // resume() is asynchronous, so the old code called it and then scheduled
+      // anyway. Those notes do not fail — they QUEUE, and fire the instant the
+      // context resumes, which is the agent's next keystroke. The result was a
+      // chime for a message that had arrived minutes earlier, while typing:
+      // worse than silence, because it is a signal about nothing.
+      //
+      // Unlocking belongs to the gesture handler. Here we only ever play when
+      // we already can.
+      if (noticeCtx.state !== "running") return false;
+      const now = noticeCtx.currentTime + 0.01;
       const osc = noticeCtx.createOscillator();
       const gain = noticeCtx.createGain();
       osc.type = "sine";
@@ -657,6 +666,64 @@ window.Shared = (() => {
     } catch (e) {
       return false; // no audio available; the unread badge still tells the story
     }
+  }
+
+  // notify: the full attention chain, strongest signal the page is allowed to
+  // use, in order.
+  //
+  // There is no trick that defeats the autoplay policy. What mature chat apps
+  // actually rely on is STICKY ACTIVATION — one interaction anywhere on the page
+  // unlocks audio for the rest of that page's life — which is why sound "just
+  // works" for them and reads as needing no permission. When audio is genuinely
+  // locked, the honest fallback is a system notification: it carries its own
+  // sound, is subject to no autoplay policy at all, and we usually already hold
+  // the permission because push asked for it.
+  //
+  // The title badge is last and needs no permission whatsoever, so something
+  // always changes even in the worst case.
+  async function notify({ title, body, tag }) {
+    const focused = document.visibilityState === "visible" && document.hasFocus();
+
+    // Focused and unlocked: a quiet in-page blip is the least intrusive thing
+    // that works. An OS notification for a tab you are already looking at is
+    // noise.
+    if (focused && playNotice()) return "audio";
+
+    // Not focused, or audio is locked. A system notification carries its own
+    // sound and sidesteps the policy entirely.
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try {
+        const reg = await navigator.serviceWorker?.getRegistration();
+        const opts = { body, tag: tag || "chat", renotify: true, silent: false };
+        if (reg) { await reg.showNotification(title, opts); return "notification"; }
+        new Notification(title, opts);
+        return "notification";
+      } catch (e) { /* fall through to the badge */ }
+    }
+
+    // Last resort, always available: put it in the tab title.
+    bumpTitleBadge();
+    return "badge";
+  }
+
+  // Unread count in the tab title, cleared when the page is looked at again.
+  let titleBadge = 0;
+  let baseTitle = null;
+  function bumpTitleBadge() {
+    if (baseTitle === null) baseTitle = document.title;
+    titleBadge += 1;
+    document.title = `(${titleBadge}) ${baseTitle}`;
+  }
+  function clearTitleBadge() {
+    if (baseTitle === null) return;
+    titleBadge = 0;
+    document.title = baseTitle;
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") clearTitleBadge();
+    });
+    window.addEventListener("focus", clearTitleBadge);
   }
 
   function stopRingtone() {
@@ -833,6 +900,8 @@ window.Shared = (() => {
     playNotice,
     unlockNotice,
     noticeState,
+    notify,
+    clearTitleBadge,
     requestNotifyPermission,
     notifyIncomingCall,
     clearIncomingNotification,

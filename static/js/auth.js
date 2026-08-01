@@ -2460,8 +2460,18 @@
         renderRoster();
         renderDockUnread();
       }
-      // One short notice, never a repeating ring.
-      S.playNotice();
+      // Strongest signal the page is allowed to use. Skipped entirely when the
+      // agent is already looking at THIS thread — they have seen it, so a chime
+      // would only be telling them what is on screen.
+      const looking = document.visibilityState === "visible" && document.hasFocus()
+        && activePeerId === cid && !section.classList.contains("im-collapsed");
+      if (!looking) {
+        S.notify({
+          title: t.name || "New message",
+          body: (data.message && data.message.body) || "",
+          tag: "conv-" + cid,
+        });
+      }
     }
 
     // open(): show a conversation thread and its transcript. The agent side of
@@ -2607,7 +2617,9 @@
         renderRoster();
         renderMessages();
         renderDockUnread();
-        if (!visible) S.playNotice();
+        if (!visible) {
+          S.notify({ title: ct.name || "New message", body: data.body || "", tag: "conv-" + data.cid });
+        }
         return;
       }
       if (!data.fromId || !data.text) return;
