@@ -204,6 +204,18 @@ async function textsOf(page, selector) {
       `saw ${afterEntries.length}: ${JSON.stringify(peopleAfter)}`
     );
 
+    // The notice sound is silent unless a user gesture has unlocked audio.
+    // WebKit (Safari) starts every AudioContext suspended, so creating it
+    // lazily inside a message handler — never a gesture — produced no blip and
+    // no error. The agent has clicked by now (sign-in, availability), so it
+    // must be running.
+    const audio = await agent.evaluate(() => window.Shared?.noticeState?.() ?? "no Shared");
+    check(
+      "notice audio is unlocked on the console",
+      audio === "running",
+      `AudioContext state is ${audio} — a notice would be silent`
+    );
+
     // ── transcript survives a console reload ─────────────────────────────
     await agent.reload({ waitUntil: "domcontentloaded" });
     await agent.waitForSelector(SEL.availability, { state: "attached", timeout: 20000 });
@@ -213,6 +225,18 @@ async function textsOf(page, selector) {
       "transcript survives a console reload",
       afterReload.some((m) => m.includes("Hi from the visitor")),
       JSON.stringify(afterReload)
+    );
+
+    // After a reload the page has had no gesture, so audio is locked again.
+    // That is browser policy, not something we can code around — it is pinned
+    // so nobody later "fixes" the silence by weakening the unlock and wonders
+    // why Safari still says nothing. The unread badge carries it until the
+    // agent touches the page.
+    const audioAfterReload = await agent.evaluate(() => window.Shared?.noticeState?.() ?? "no Shared");
+    check(
+      "audio is locked again after a reload, until the agent interacts",
+      audioAfterReload !== "running",
+      `state is ${audioAfterReload} — expected not-running before any gesture`
     );
 
     check("no console errors on either page", errors.length === 0, errors.slice(0, 5).join("\n      "));

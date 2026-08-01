@@ -579,14 +579,54 @@ window.Shared = (() => {
   // WebAudio rather than an asset so it cannot 404, and wrapped because a
   // browser with no gesture yet will refuse to start an AudioContext — a
   // silent notice is acceptable, a thrown error in the delivery path is not.
+  // Audio has to be UNLOCKED by a user gesture before it can ever play.
+  //
+  // The first version created the AudioContext lazily, on first use — which is
+  // inside a WebSocket message handler and therefore never a gesture. Safari and
+  // Chrome both start such a context "suspended", refuse resume() outside a
+  // gesture, and schedule notes against a clock that never advances: silence,
+  // with no error. This is not a focus problem; a background tab plays fine once
+  // the context has been unlocked.
+  //
+  // So the context is created and resumed on the agent's FIRST interaction with
+  // the console, whatever it is, and is already running when a message lands.
   let noticeCtx = null;
-  function playNotice() {
+  function unlockNotice() {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return false;
+      if (!Ctx) return;
       noticeCtx = noticeCtx || new Ctx();
       if (noticeCtx.state === "suspended") noticeCtx.resume();
-      const now = noticeCtx.currentTime;
+    } catch (e) { /* no audio on this browser; the unread badge still shows */ }
+  }
+  // `once` is deliberate on pointerdown/keydown but the listeners are cheap and
+  // idempotent, so re-arming costs nothing if the first one fires before the
+  // context is constructible.
+  if (typeof document !== "undefined") {
+    ["pointerdown", "keydown", "click", "touchstart"].forEach((ev) =>
+      document.addEventListener(ev, unlockNotice, { capture: true, once: false })
+    );
+  }
+
+  // Diagnostic: whether the notice can actually sound right now. "suspended"
+  // means a gesture has not unlocked audio yet and any notice will be silent —
+  // which is invisible otherwise, and is exactly how the missing blip hid.
+  function noticeState() {
+    if (!noticeCtx) return "none";
+    return noticeCtx.state;
+  }
+
+  function playNotice() {
+    try {
+      if (!noticeCtx) unlockNotice();
+      if (!noticeCtx) return false;
+      if (noticeCtx.state === "suspended") {
+        // Best effort: this succeeds only if a gesture already unlocked it.
+        noticeCtx.resume();
+        if (noticeCtx.state === "suspended") return false;
+      }
+      // Never schedule in the past — a suspended-then-resumed clock can lag.
+      const now = Math.max(noticeCtx.currentTime, 0) + 0.01;
       const osc = noticeCtx.createOscillator();
       const gain = noticeCtx.createGain();
       osc.type = "sine";
@@ -775,6 +815,8 @@ window.Shared = (() => {
     playRingtone,
     stopRingtone,
     playNotice,
+    unlockNotice,
+    noticeState,
     requestNotifyPermission,
     notifyIncomingCall,
     clearIncomingNotification,
