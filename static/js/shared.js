@@ -332,6 +332,7 @@ window.Shared = (() => {
     const ch = window.Realtime.channel(channel, { token });
     if (handlers.onMessage) ch.on("broadcast", { event: "message" }, ({ payload }) => handlers.onMessage(payload));
     if (handlers.onSignal) ch.on("broadcast", { event: "signal" }, ({ payload }) => handlers.onSignal(payload));
+    if (handlers.onReceipt) ch.on("broadcast", { event: "receipt" }, ({ payload }) => handlers.onReceipt(payload));
     ch.subscribe(handlers.onStatus);
     return ch;
   }
@@ -358,6 +359,20 @@ window.Shared = (() => {
     const resp = await fetch(`/api/conversation/messages?${qs}`);
     if (!resp.ok) return { messages: [] };
     return await resp.json();
+  }
+
+  // Acknowledge the other side's messages up to an id. Fire-and-forget: a lost
+  // receipt costs a tick, never a message, so it must never block the UI or
+  // surface an error to a person.
+  async function sendReceipt({ ref, cid, token, upToId, kind }) {
+    if (!cid || !token || !upToId) return;
+    try {
+      await fetch("/api/conversation/receipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, cid, token, upToId, kind }),
+      });
+    } catch (e) { /* ticks are cosmetic; the message already arrived */ }
   }
 
   async function endConversation({ ref, cid, token }) {
@@ -802,6 +817,7 @@ window.Shared = (() => {
     endConversation,
     sendConversationMessage,
     loadTranscript,
+    sendReceipt,
     sendIM,
     setupCallChannel,
     sendCallSignal,

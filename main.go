@@ -347,6 +347,16 @@ func openDB(path string) (*sql.DB, error) {
 		_, _ = d.Exec(`UPDATE conversations SET last_activity_at = created_at`)
 	}
 
+	// Delivery receipts. Two timestamps rather than a status enum: they answer
+	// "when", they are monotonic, and a later state cannot silently overwrite an
+	// earlier one the way a single mutable status can.
+	var hasDelivered int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('chat_messages') WHERE name = 'delivered_at'`).Scan(&hasDelivered)
+	if hasDelivered == 0 {
+		_, _ = d.Exec(`ALTER TABLE chat_messages ADD COLUMN delivered_at INTEGER`)
+		_, _ = d.Exec(`ALTER TABLE chat_messages ADD COLUMN read_at INTEGER`)
+	}
+
 	var hasChatOK int
 	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('agent_availability') WHERE name = 'chat_ok'`).Scan(&hasChatOK)
 	if hasChatOK == 0 {

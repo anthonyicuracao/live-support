@@ -442,6 +442,7 @@
     // before we are listening.
     currentCallChannel = S.openConversation(conv, {
       onMessage: (m) => IM.receive(m),
+      onReceipt: (r) => IM.applyReceipt(r),
     });
     IM.open({ cid: conv.cid, token: conv.token, name: target.name, picture: target.picture });
     // Deliberately NO ring. Starting a chat is not placing a call: the visitor
@@ -653,6 +654,7 @@
       currentCallChannel = S.openConversation(currentConv, {
         onSignal: handleCallSignal,
         onMessage: (m) => IM.receive(m),
+        onReceipt: (r) => IM.applyReceipt(r),
       });
 
       // An agent opening a CHAT shows the thread rather than ringing.
@@ -1109,7 +1111,23 @@
     let unread = 0;
 
     if (!section) {
-      return { receive() {}, open() {}, refresh() {} };
+      return { receive() {}, open() {}, refresh() {}, applyReceipt() {} };
+    }
+
+    // Expand / restore, desktop only (the button is display:none below the
+    // breakpoint). Kept separate from collapse: collapsing hides the
+    // conversation, expanding gives it more room — opposite intents that the
+    // same control would muddle.
+    const expandBtn = section?.querySelector(".im-expand");
+    if (expandBtn) {
+      expandBtn.addEventListener("click", (e) => {
+        e.stopPropagation(); // must not also toggle the dock
+        const on = section.classList.toggle("im-expanded");
+        expandBtn.setAttribute("aria-pressed", String(on));
+        expandBtn.setAttribute("aria-label", on ? "Restore chat size" : "Expand chat");
+        // Expanding reveals more of the thread, so scroll to the newest.
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      });
     }
 
     // Click the header bar to minimize / expand, like Facebook chat.
@@ -1144,6 +1162,18 @@
         const li = document.createElement("li");
         li.className = "im-msg " + (m.dir === "out" ? "im-msg-out" : "im-msg-in");
         li.textContent = m.text;
+        // Ticks only on OUR messages: a receipt describes what the other side
+        // did, so showing one against their own message would be meaningless.
+        if (m.dir === "out") {
+          const tick = document.createElement("span");
+          const state = m.readAt ? "read" : m.deliveredAt ? "delivered" : m.id ? "sent" : "pending";
+          tick.className = "im-tick im-tick--" + state;
+          tick.setAttribute("aria-label", {
+            pending: "sending", sent: "sent", delivered: "delivered", read: "read",
+          }[state]);
+          tick.textContent = state === "pending" ? "🕘" : state === "sent" ? "✓" : "✓✓";
+          li.appendChild(tick);
+        }
         messagesEl.appendChild(li);
       }
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -1162,7 +1192,11 @@
           if (ct.seen.has(data.id)) return; // already rendered
           ct.seen.add(data.id);
         }
-        ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000 });
+        ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000, id: data.id });
+        // It is on this device now — that is precisely what "delivered" means.
+        S.sendReceipt({ ref: params.ref, cid: data.cid, token: conv && conv.token,
+                        upToId: data.id, kind: "delivered" });
+        maybeMarkRead(ct);
         activeAdminId = data.cid;
         S.showSection(".im");
         if (section.classList.contains("im-collapsed")) {
@@ -1223,10 +1257,37 @@
             dir: m.sender === "guest" ? "out" : "in",
             text: m.body,
             ts: m.created_at * 1000,
+            id: m.id,
+            deliveredAt: m.delivered_at || 0,
+            readAt: m.read_at || 0,
           };
         });
         renderMessages();
       });
+    }
+
+    // "Read" is a claim about a human, so it needs BOTH: the tab is actually
+    // visible, and the dock is open. An unattended tab left on screen must not
+    // report that someone read anything.
+    function maybeMarkRead(t) {
+      if (!conv || !t || document.visibilityState !== "visible") return;
+      if (section.classList.contains("im-collapsed")) return;
+      let top = 0;
+      for (const m of t.messages) if (m.dir === "in" && m.id > top) top = m.id;
+      if (top) S.sendReceipt({ ref: params.ref, cid: conv.cid, token: conv.token, upToId: top, kind: "read" });
+    }
+
+    // The other side acknowledged us: move our ticks.
+    function applyReceipt(r) {
+      if (!conv || !r || r.by === "guest") return; // our own acks are not news
+      const t = threads.get(conv.cid);
+      if (!t) return;
+      for (const m of t.messages) {
+        if (m.dir !== "out" || !m.id || m.id > r.upToId) continue;
+        if (r.kind === "delivered") m.deliveredAt = m.deliveredAt || r.at;
+        if (r.kind === "read") { m.readAt = m.readAt || r.at; m.deliveredAt = m.deliveredAt || r.at; }
+      }
+      renderMessages();
     }
 
     // Rebuild this conversation from the SERVER record.
@@ -1248,9 +1309,13 @@
           dir: m.sender === "guest" ? "out" : "in",
           text: m.body,
           ts: m.created_at * 1000,
+          id: m.id,
+          deliveredAt: m.delivered_at || 0,
+          readAt: m.read_at || 0,
         };
       });
       renderMessages();
+      maybeMarkRead(t); // a catch-up can deliver something now on screen
     }
 
     // Catch up on BOTH signals. Reconnect covers a dropped socket; visibility
@@ -1258,23 +1323,29 @@
     // case that lost the message.
     if (window.Realtime.onReconnect) window.Realtime.onReconnect(() => refresh());
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState !== "visible") return;
+      refresh().then(() => { if (conv) maybeMarkRead(threads.get(conv.cid)); });
     });
 
     async function send(text) {
       if (!conv || !text) return;
       const t = threads.get(conv.cid);
       if (!t) return;
-      t.messages.push({ dir: "out", text, ts: Date.now() });
+      // Optimistic, with no id yet — that is what "pending" means, and it is
+      // why the tick has a fourth state rather than starting at "sent".
+      const pending = { dir: "out", text, ts: Date.now() };
+      t.messages.push(pending);
       renderMessages();
-      // Persisted and broadcast by the shared helper, in that order, so what
-      // the agent sees is always already in the transcript.
-      await S.sendConversationMessage({
+      const saved = await S.sendConversationMessage({
         ref: params.ref,
         cid: conv.cid,
         token: conv.token,
         body: text,
       });
+      if (saved && saved.message) {
+        pending.id = saved.message.id; // now "sent"
+        renderMessages();
+      }
     }
 
     formEl.addEventListener("submit", (e) => {
@@ -1285,7 +1356,7 @@
       send(text);
     });
 
-    return { receive, open, refresh };
+    return { receive, open, refresh, applyReceipt };
   })();
 
   // ─── Helpers ──────────────────────────────────────────────────────────

@@ -549,7 +549,11 @@ td button {
 /* ─── Instant Messaging (docked bottom-right, Facebook-style) ──────────── */
 .im {
   position: fixed;
-  right: 1rem;
+  /* CENTERED, not tucked into a corner. The chat is the conversation the
+     visitor came for, so it sits where their attention already is. Centring via
+     left+translate rather than margins keeps it correct at any width. */
+  left: 50%;
+  transform: translateX(-50%);
   bottom: 1rem;
   z-index: 1000;
   width: 22rem;
@@ -564,6 +568,61 @@ td button {
   box-shadow: 0 0 1rem rgba(44, 62, 80, 0.25);
   overflow: hidden;
 }
+/* Expanded: desktop only, on purpose. A phone is already effectively full
+   width, so "expand" there would be a control that does nothing — worse than
+   not offering it. The breakpoint is what makes the button meaningful. */
+@media (min-width: 48rem) {
+  .im.im-expanded {
+    width: 46rem;
+    max-width: calc(100vw - 4rem);
+  }
+  .im.im-expanded .im-messages {
+    max-height: 60vh;
+    min-height: 24rem;
+  }
+  .im-expand {
+    display: inline-flex;
+  }
+}
+
+/* Hidden below the breakpoint rather than merely inert. */
+.im-expand {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+
+/* Delivery ticks. Grey for delivered, accent for read — the same vocabulary
+   people already know, so it needs no explaining. */
+.im-tick {
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+.im-tick--pending { opacity: 0.45; }
+.im-tick--sent    { opacity: 0.6; }
+.im-tick--delivered { opacity: 0.85; }
+.im-tick--read {
+  opacity: 1;
+  color: #4fc3f7;
+}
+
+/* The bar holds the title (which toggles collapse) and the expand control. */
+.im-dock-bar {
+  display: flex;
+  align-items: stretch;
+}
+.im-dock-bar .im-dock-header { flex: 1; }
+
 /* Clickable title bar */
 .im-dock-header {
   display: flex;

@@ -216,6 +216,25 @@ async function textsOf(page, selector) {
       `AudioContext state is ${audio} — a notice would be silent`
     );
 
+    // ── delivery ticks ───────────────────────────────────────────────────
+    // A receipt that never arrives is invisible: the message still shows, it
+    // just never gains its second tick. So assert the STATE, not the presence
+    // of a tick element.
+    const tickState = async (page) => page.evaluate(() => {
+      const els = [...document.querySelectorAll(".im-msg-out .im-tick")];
+      const last = els[els.length - 1];
+      if (!last) return "none";
+      return (last.className.match(/im-tick--(\w+)/) || [])[1] || "unknown";
+    });
+
+    await guest.waitForTimeout(1500);
+    const guestTick = await tickState(guest);
+    check(
+      "the visitor's message shows delivered or read, not just sent",
+      guestTick === "delivered" || guestTick === "read",
+      `tick state is "${guestTick}" — the agent's receipt never came back`
+    );
+
     // ── a message sent while the guest is OFFLINE still arrives ──────────
     //
     // Ron's multi-device case: a phone freezes the tab the moment it goes to

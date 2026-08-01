@@ -2109,7 +2109,7 @@
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {}, refresh() {} };
+      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {}, refresh() {}, applyReceipt() {}, maybeMarkRead() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2249,6 +2249,7 @@
       renderMessages();
       renderRoster();
       renderDockUnread();
+      maybeMarkRead(t);
     }
 
     function renderMessages() {
@@ -2284,7 +2285,13 @@
         if (t.seen.has(m.id)) return false;
         t.seen.add(m.id);
       }
-      t.messages.push({ dir, text: m.body, ts: (m.created_at || 0) * 1000 });
+      t.messages.push({
+        dir, text: m.body, ts: (m.created_at || 0) * 1000, id: m.id,
+        deliveredAt: m.delivered_at || 0, readAt: m.read_at || 0,
+      });
+      if (dir === "in" && m.id && t.conv) {
+        S.sendReceipt({ ref, cid: t.conv.cid, token: t.conv.token, upToId: m.id, kind: "delivered" });
+      }
       return true;
     }
 
@@ -2305,7 +2312,7 @@
         };
         threads.set(c.cid, t);
         S.openConversation({ channel: c.channel, token: c.token },
-          { onMessage: (m) => receive(m) });
+          { onMessage: (m) => receive(m), onReceipt: (r) => applyReceipt(r) });
         const tr = await S.loadTranscript({ ref, cid: c.cid, token: c.token });
         t.seen = new Set();
         for (const m of tr.messages || []) {
@@ -2351,8 +2358,33 @@
 
     if (window.Realtime.onReconnect) window.Realtime.onReconnect(() => refresh());
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState !== "visible") return;
+      refresh().then(() => maybeMarkRead(activePeerId ? threads.get(activePeerId) : null));
     });
+
+    // Same two conditions as the guest side: a visible tab AND an open,
+    // ACTIVE thread. A console left open on another visitor must not report
+    // that this one's messages were read.
+    function maybeMarkRead(t) {
+      if (!t || !t.conv || document.visibilityState !== "visible") return;
+      if (t.id !== activePeerId || section.classList.contains("im-collapsed")) return;
+      let top = 0;
+      for (const m of t.messages) if (m.dir === "in" && m.id > top) top = m.id;
+      if (top) S.sendReceipt({ ref, cid: t.conv.cid, token: t.conv.token, upToId: top, kind: "read" });
+    }
+
+    function applyReceipt(r) {
+      if (!r || r.by === "agent") return; // our own acks are not news
+      for (const [, t] of threads) {
+        if (!t.conv) continue;
+        for (const m of t.messages) {
+          if (m.dir !== "out" || !m.id || m.id > r.upToId) continue;
+          if (r.kind === "delivered") m.deliveredAt = m.deliveredAt || r.at;
+          if (r.kind === "read") { m.readAt = m.readAt || r.at; m.deliveredAt = m.deliveredAt || r.at; }
+        }
+      }
+      renderMessages();
+    }
 
     // deliver(): a visitor's chat message arrived.
     //
@@ -2382,7 +2414,7 @@
         };
         threads.set(cid, t);
         S.openConversation({ channel: tok.channel, token: tok.token },
-          { onMessage: (m) => receive(m) });
+          { onMessage: (m) => receive(m), onReceipt: (r) => applyReceipt(r) });
       }
 
       if (!addMessage(t, data.message, "in")) return; // already have it
@@ -2486,7 +2518,7 @@
         t.conv = { cid: invited.cid, token: invited.token };
         S.openConversation(
           { channel: invited.channel, token: invited.token },
-          { onMessage: (m) => receive(m) }
+          { onMessage: (m) => receive(m), onReceipt: (r) => applyReceipt(r) }
         );
         if (!t.loadedTranscript) {
           t.loadedTranscript = true;
@@ -2500,15 +2532,20 @@
         }
       }
 
-      t.messages.push({ dir: "out", text, ts: Date.now() });
+      const pending = { dir: "out", text, ts: Date.now() };
+      t.messages.push(pending);
       t.awaitingReply = false; // answered — another visitor may now take focus
       renderMessages();
       // A conversation thread goes over its private channel; anything else is
       // still the agent-to-agent inbox.
       if (t.conv) {
-        await S.sendConversationMessage({
+        const saved = await S.sendConversationMessage({
           ref, cid: t.conv.cid, token: t.conv.token, body: text,
         });
+        if (saved && saved.message) {
+          pending.id = saved.message.id;
+          renderMessages();
+        }
         return;
       }
       // Guests see the public display name; fellow agents see the real name.
@@ -2567,7 +2604,7 @@
       send(text);
     });
 
-    return { updateRoster, receive, open, deliver, restore, refresh };
+    return { updateRoster, receive, open, deliver, restore, refresh, applyReceipt, maybeMarkRead };
   })();
 
   // Rebuild open conversations now that IM exists. Not awaited: a slow restore

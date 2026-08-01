@@ -92,11 +92,16 @@
            first; the guest never sees a list of agents). Docked bottom-right;
            click the header bar to minimize/expand. -->
       <section class="im" style="display: none">
-        <button type="button" class="im-dock-header">
-          <span class="im-dock-title im-thread-name">Chat</span>
-          <span class="im-dock-unread" style="display: none">0</span>
-          <span class="im-dock-chevron" aria-hidden="true">▾</span>
-        </button>
+        <div class="im-dock-bar">
+          <button type="button" class="im-dock-header">
+            <span class="im-dock-title im-thread-name">Chat</span>
+            <span class="im-dock-unread" style="display: none">0</span>
+            <span class="im-dock-chevron" aria-hidden="true">▾</span>
+          </button>
+          <!-- Desktop only (see the CSS breakpoint): a phone is already full
+               width, so an expand control there would do nothing. -->
+          <button type="button" class="im-expand" aria-label="Expand chat" aria-pressed="false">⤢</button>
+        </div>
         <div class="im-body">
           <div class="im-thread">
             <ul class="im-messages">

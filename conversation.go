@@ -690,7 +690,8 @@ func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	rows, err := db.Query(
-		`SELECT id, sender, body, created_at FROM chat_messages WHERE cid = ? ORDER BY id`, q.Get("cid"))
+		`SELECT id, sender, body, created_at, delivered_at, read_at
+		   FROM chat_messages WHERE cid = ? ORDER BY id`, q.Get("cid"))
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"messages": []any{}})
 		return
@@ -699,10 +700,12 @@ func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Req
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, created int64
+		var delivered, read sql.NullInt64
 		var sender, msgBody string
-		if err := rows.Scan(&id, &sender, &msgBody, &created); err == nil {
+		if err := rows.Scan(&id, &sender, &msgBody, &created, &delivered, &read); err == nil {
 			out = append(out, map[string]any{
 				"id": id, "sender": sender, "body": msgBody, "created_at": created,
+				"delivered_at": delivered.Int64, "read_at": read.Int64,
 			})
 		}
 	}
@@ -883,7 +886,70 @@ func (a *authApp) conversationsListHandler(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, map[string]any{"conversations": out})
 }
 
+// POST /api/conversation/receipt: mark the OTHER party's messages delivered or
+// read, up to an id.
+//
+// Two states, WhatsApp's model, because they answer different questions:
+// "delivered" means it reached the recipient's device, "read" means a human
+// had it on screen. Conflating them would make an unattended open tab look like
+// someone reading.
+//
+// Deliberately "up to id" rather than per message: receipts arrive in bursts
+// (a reconnect delivers a backlog at once), and a monotonic high-water mark is
+// both cheaper and immune to out-of-order arrival.
+//
+// A participant may only ever mark the OTHER side's messages — the sender's
+// role comes from the token, so nobody can mark their own message read and
+// fake an acknowledgement.
+func (a *authApp) conversationReceiptHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	var body struct {
+		Ref    string `json:"ref"`
+		CID    string `json:"cid"`
+		Token  string `json:"token"`
+		UpToID int64  `json:"upToId"`
+		Kind   string `json:"kind"` // "delivered" | "read"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	t, terr := parseConvToken(a.ssoSecret, body.Token)
+	db, _, ok := authConv(body.Ref, body.CID, body.Token)
+	if terr != nil || !ok {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	col := ""
+	switch body.Kind {
+	case "delivered":
+		col = "delivered_at"
+	case "read":
+		col = "read_at"
+	default:
+		errJSON(w, 400, "unknown receipt kind")
+		return
+	}
+	now := time.Now().Unix()
+	// sender <> the acknowledging role, and never overwrite an earlier stamp:
+	// the FIRST time it arrived is the truth.
+	if _, err := db.Exec(
+		`UPDATE chat_messages SET `+col+` = ?
+		  WHERE cid = ? AND id <= ? AND sender != ? AND `+col+` IS NULL`,
+		now, body.CID, body.UpToID, t.Role); err != nil {
+		errJSON(w, 500, "store failed")
+		return
+	}
+	// Tell the sender so their ticks move without polling.
+	payload, _ := json.Marshal(map[string]any{
+		"kind": body.Kind, "upToId": body.UpToID, "by": t.Role, "at": now,
+	})
+	hub.broadcast(convChannel(body.CID), "receipt", payload)
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
 func (a *authApp) mountConversations(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/conversation/receipt", a.conversationReceiptHandler)
 	mux.Handle("GET /api/conversations", a.authedJSON(a.conversationsListHandler))
 	mux.HandleFunc("POST /api/guest/session", a.guestSessionHandler)
 	mux.Handle("POST /api/conversation/invite", a.authedJSON(a.conversationInviteHandler))
