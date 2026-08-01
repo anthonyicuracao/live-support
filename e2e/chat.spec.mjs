@@ -216,6 +216,36 @@ async function textsOf(page, selector) {
       `AudioContext state is ${audio} — a notice would be silent`
     );
 
+    // ── a message sent while the guest is OFFLINE still arrives ──────────
+    //
+    // Ron's multi-device case: a phone freezes the tab the moment it goes to
+    // the background, the agent replies into a dead socket, and that broadcast
+    // is gone for good. config.js documents the hazard; nothing handled it for
+    // chat, so the message was silently skipped while later ones arrived.
+    await guestCtx.setOffline(true);
+    await agent.fill(SEL.input, "Sent while the visitor was offline");
+    await agent.press(SEL.input, "Enter");
+    await agent.waitForTimeout(1200);
+
+    const whileOffline = await textsOf(guest, SEL.guestMessages);
+    check(
+      "the offline visitor genuinely missed it (test is meaningful)",
+      !whileOffline.some((m) => m.includes("while the visitor was offline")),
+      "the guest received it while offline — this test proves nothing"
+    );
+
+    await guestCtx.setOffline(true === false); // back online
+    // Nudge the page the way returning to a tab does.
+    await guest.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await guest.waitForTimeout(2500);
+
+    const afterBack = await textsOf(guest, SEL.guestMessages);
+    check(
+      "the missed message is recovered when the visitor comes back",
+      afterBack.filter((m) => m.includes("while the visitor was offline")).length === 1,
+      JSON.stringify(afterBack)
+    );
+
     // ── transcript survives a console reload ─────────────────────────────
     await agent.reload({ waitUntil: "domcontentloaded" });
     await agent.waitForSelector(SEL.availability, { state: "attached", timeout: 20000 });
@@ -239,7 +269,13 @@ async function textsOf(page, selector) {
       `state is ${audioAfterReload} — expected not-running before any gesture`
     );
 
-    check("no console errors on either page", errors.length === 0, errors.slice(0, 5).join("\n      "));
+    // A deliberately-offline page logs network failures; those are the test
+    // doing its job, not a defect. Everything else must still be clean —
+    // filtered narrowly rather than relaxing the check, so a real error during
+    // the offline window would still fail.
+    const realErrors = errors.filter((e) => !/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|Failed to fetch/i.test(e));
+    check("no unexpected console errors on either page", realErrors.length === 0,
+      realErrors.slice(0, 5).join("\n      "));
   } catch (e) {
     check("test run completed without throwing", false, String(e && e.stack ? e.stack : e));
     // Page console is the only window into a wiring failure — print the tail.

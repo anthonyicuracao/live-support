@@ -1109,7 +1109,7 @@
     let unread = 0;
 
     if (!section) {
-      return { receive() {}, open() {} };
+      return { receive() {}, open() {}, refresh() {} };
     }
 
     // Click the header bar to minimize / expand, like Facebook chat.
@@ -1229,6 +1229,38 @@
       });
     }
 
+    // Rebuild this conversation from the SERVER record.
+    //
+    // A WebSocket broadcast sent while the socket is down is gone — config.js
+    // says so explicitly, and on mobile the tab is frozen the moment it goes to
+    // the background, which is exactly when an agent replies. The transcript is
+    // the record, so re-reading it is the catch-up; the message ids make it
+    // idempotent, so this can run as often as we like.
+    async function refresh() {
+      if (!conv) return;
+      const res = await S.loadTranscript({ ref: params.ref, cid: conv.cid, token: conv.token });
+      const t = threads.get(conv.cid);
+      if (!t || !res.messages) return;
+      t.seen = new Set();
+      t.messages = res.messages.map((m) => {
+        if (m.id != null) t.seen.add(m.id);
+        return {
+          dir: m.sender === "guest" ? "out" : "in",
+          text: m.body,
+          ts: m.created_at * 1000,
+        };
+      });
+      renderMessages();
+    }
+
+    // Catch up on BOTH signals. Reconnect covers a dropped socket; visibility
+    // covers a phone that froze the tab without ever closing it, which is the
+    // case that lost the message.
+    if (window.Realtime.onReconnect) window.Realtime.onReconnect(() => refresh());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
+    });
+
     async function send(text) {
       if (!conv || !text) return;
       const t = threads.get(conv.cid);
@@ -1253,7 +1285,7 @@
       send(text);
     });
 
-    return { receive, open };
+    return { receive, open, refresh };
   })();
 
   // ─── Helpers ──────────────────────────────────────────────────────────

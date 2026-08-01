@@ -2109,7 +2109,7 @@
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {} };
+      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {}, refresh() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2325,6 +2325,35 @@
       }
     }
 
+    // Rebuild every open conversation from the SERVER record.
+    //
+    // Same hazard as the guest side, and config.js documents it: a broadcast
+    // sent while the socket is down is simply gone. Only the dashboard logs
+    // registered a reconnect hook; chat did not, so an agent whose laptop slept
+    // (or whose tab was throttled) silently lost whatever the visitor said in
+    // the meantime — and had no way to know.
+    //
+    // The transcript is the record and message ids make this idempotent, so it
+    // is safe to run on every reconnect and every return to visibility.
+    async function refresh() {
+      for (const [, t] of threads) {
+        if (!t.conv) continue;
+        const res = await S.loadTranscript({ ref, cid: t.conv.cid, token: t.conv.token });
+        if (!res.messages) continue;
+        t.seen = new Set();
+        t.messages = [];
+        for (const m of res.messages) addMessage(t, m, m.sender === "agent" ? "out" : "in");
+      }
+      renderMessages();
+      renderRoster();
+      renderDockUnread();
+    }
+
+    if (window.Realtime.onReconnect) window.Realtime.onReconnect(() => refresh());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
+    });
+
     // deliver(): a visitor's chat message arrived.
     //
     // Selection rule (Ron, 2026-08-01): auto-select the thread when the agent
@@ -2538,7 +2567,7 @@
       send(text);
     });
 
-    return { updateRoster, receive, open, deliver, restore };
+    return { updateRoster, receive, open, deliver, restore, refresh };
   })();
 
   // Rebuild open conversations now that IM exists. Not awaited: a slow restore
