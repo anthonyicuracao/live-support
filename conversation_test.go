@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -245,7 +247,7 @@ func TestConversationStartRespectsModality(t *testing.T) {
 
 	start := func(callType string) int {
 		status, _ := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
-			"ref": testRef, "agentUserId": uid, "callType": callType,
+			"ref": testRef, "callType": callType,
 			"guestSession": "guest-sess", "guestName": "Guest",
 		})
 		return status
@@ -276,7 +278,7 @@ func TestConversationStartRequiresAvailability(t *testing.T) {
 		t.Fatalf("upsertAvailability: %v", err)
 	}
 	status, _ := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
-		"ref": testRef, "agentUserId": uid, "callType": callTypeChat,
+		"ref": testRef, "callType": callTypeChat,
 		"guestSession": "guest-sess", "guestName": "Guest",
 	})
 	if status == 200 {
@@ -284,9 +286,10 @@ func TestConversationStartRequiresAvailability(t *testing.T) {
 	}
 }
 
-// The concurrency governor: chat may run alongside a call, but not without
-// bound, and the bound is enforced server-side.
-func TestChatConcurrencyGovernor(t *testing.T) {
+// Capacity SORTS, it never gates. A visitor is never refused because of an
+// agent-side accounting number — that produced a 429 which made an agent with
+// three abandoned test chats permanently unreachable.
+func TestCapacityRoutesNeverRefuses(t *testing.T) {
 	t.Setenv("MAX_CONCURRENT_CHATS", "2")
 	srv, db := newServer(t)
 	c := newClient(t)
@@ -297,32 +300,120 @@ func TestChatConcurrencyGovernor(t *testing.T) {
 		t.Fatalf("upsertAvailability: %v", err)
 	}
 
-	start := func() int {
-		status, _ := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
-			"ref": testRef, "agentUserId": uid, "callType": callTypeChat,
+	start := func() (int, string) {
+		return postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
+			"ref": testRef, "callType": callTypeChat,
 			"guestSession": "guest-sess", "guestName": "Guest",
 		})
-		return status
 	}
 
-	if got := start(); got != 200 {
-		t.Fatalf("first chat = %d, want 200", got)
+	// Every chat is accepted, including past the cap.
+	for i := 1; i <= 3; i++ {
+		if st, _ := start(); st != 200 {
+			t.Fatalf("chat %d = %d, want 200 — capacity must not refuse a visitor", i, st)
+		}
 	}
-	if got := start(); got != 200 {
-		t.Fatalf("second chat = %d, want 200", got)
-	}
-	if got := start(); got != http.StatusTooManyRequests {
-		t.Errorf("third chat = %d, want 429 — the cap was not enforced", got)
+	// ...but the visitor is told honestly once the agent is over capacity, so
+	// the UI can set expectations instead of pretending the agent is idle.
+	_, body := start()
+	if !strings.Contains(body, `"waiting":true`) {
+		t.Errorf("4th chat past capacity should report waiting:true, got %s", body)
 	}
 
-	// Audio is a different modality and must NOT be blocked by the chat cap:
+	// Audio is a different modality and must NOT be affected by the chat load:
 	// falling off one modality must never look like going offline.
-	statusAudio, _ := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
-		"ref": testRef, "agentUserId": uid, "callType": callTypeAudio,
+	stAudio, bodyAudio := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
+		"ref": testRef, "callType": callTypeAudio,
 		"guestSession": "guest-sess", "guestName": "Guest",
 	})
-	if statusAudio != 200 {
-		t.Errorf("audio start = %d while at chat capacity, want 200", statusAudio)
+	if stAudio != 200 {
+		t.Errorf("audio start = %d while chat-loaded, want 200", stAudio)
+	}
+	if strings.Contains(bodyAudio, `"waiting":true`) {
+		t.Errorf("audio should not be waiting because of chat load: %s", bodyAudio)
+	}
+}
+
+// A call is exclusive — one voice, one pair of ears — so an agent already on a
+// call has no spare capacity for another, whatever the chat setting says.
+func TestCallCapacityIsExclusive(t *testing.T) {
+	_, db := newServer(t)
+	uid := mustUser(t, db, "call-agent")
+	if err := upsertAvailability(db, testRef, uid, true, "sess", "On Call", true, "", "",
+		modes{Chat: true, Audio: true, Video: true}); err != nil {
+		t.Fatalf("upsertAvailability: %v", err)
+	}
+	if got := capacityFor(callTypeAudio); got != 1 {
+		t.Errorf("audio capacity = %d, want 1", got)
+	}
+	if got := capacityFor(callTypeVideo); got != 1 {
+		t.Errorf("video capacity = %d, want 1", got)
+	}
+	if capacityFor(callTypeChat) < 2 {
+		t.Error("chat capacity should allow more than one — it is multiplexable")
+	}
+
+	// First call: spare.
+	if _, spare := routeAgent(db, testRef, callTypeAudio); !spare {
+		t.Fatal("a free agent should have spare call capacity")
+	}
+	cid, _ := newConvID()
+	if err := createConversation(db, conversation{
+		CID: cid, Ref: testRef, GuestSession: "g1", AgentUserID: uid,
+		CallType: callTypeAudio, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("createConversation: %v", err)
+	}
+	// Second: still ROUTED to them (never refused), but reported as waiting.
+	id, spare := routeAgent(db, testRef, callTypeAudio)
+	if id != uid {
+		t.Errorf("routed to %d, want %d — the only agent offering audio", id, uid)
+	}
+	if spare {
+		t.Error("an agent already on a call must not report spare call capacity")
+	}
+	// Chat is unaffected: chat alongside a call is normal work.
+	if _, chatSpare := routeAgent(db, testRef, callTypeChat); !chatSpare {
+		t.Error("being on a call must not consume chat capacity")
+	}
+}
+
+// An abandoned chat must stop consuming capacity, or one test session takes an
+// agent out of rotation forever. This is the bug the 429 was a symptom of.
+func TestInactiveChatsReleaseCapacity(t *testing.T) {
+	t.Setenv("MAX_CONCURRENT_CHATS", "1")
+	_, db := newServer(t)
+	uid := mustUser(t, db, "loaded-agent")
+	if err := upsertAvailability(db, testRef, uid, true, "sess", "Loaded", false, "", "",
+		modes{Chat: true}); err != nil {
+		t.Fatalf("upsertAvailability: %v", err)
+	}
+	cid, _ := newConvID()
+	if err := createConversation(db, conversation{
+		CID: cid, Ref: testRef, GuestSession: "g1", AgentUserID: uid,
+		CallType: callTypeChat, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("createConversation: %v", err)
+	}
+	if _, spare := routeAgent(db, testRef, callTypeChat); spare {
+		t.Fatal("precondition: one active chat should exhaust a cap of 1")
+	}
+
+	// Age it past the inactivity window. It is NOT ended — the visitor could
+	// still come back — it simply stops occupying the agent.
+	stale := time.Now().Add(-2 * chatInactiveAfter()).Unix()
+	if _, err := db.Exec(`UPDATE conversations SET last_activity_at = ? WHERE cid = ?`, stale, cid); err != nil {
+		t.Fatalf("age conversation: %v", err)
+	}
+	if _, spare := routeAgent(db, testRef, callTypeChat); !spare {
+		t.Error("an inactive chat must not keep consuming capacity")
+	}
+	var ended sql.NullInt64
+	if err := db.QueryRow(`SELECT ended_at FROM conversations WHERE cid = ?`, cid).Scan(&ended); err != nil {
+		t.Fatalf("read ended_at: %v", err)
+	}
+	if ended.Valid {
+		t.Error("going inactive must not CLOSE the conversation — the visitor may return")
 	}
 }
 

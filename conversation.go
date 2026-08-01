@@ -179,6 +179,10 @@ func createConversation(db *sql.DB, c conversation) error {
 		`INSERT INTO conversations (cid, ref, guest_session, guest_name, agent_user_id, call_type, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		c.CID, c.Ref, c.GuestSession, c.GuestName, c.AgentUserID, c.CallType, c.CreatedAt)
+	if err == nil {
+		// A new conversation is active by definition.
+		_, _ = db.Exec(`UPDATE conversations SET last_activity_at = ? WHERE cid = ?`, c.CreatedAt, c.CID)
+	}
 	return err
 }
 
@@ -191,15 +195,141 @@ func conversationByCID(db *sql.DB, cid string) (conversation, error) {
 	return c, err
 }
 
-// agentOpenChatCount counts a user's live chat conversations — the input to the
-// max_concurrent_chats governor.
-func agentOpenChatCount(db *sql.DB, userID int64) int {
-	var n int
-	_ = db.QueryRow(
-		`SELECT COUNT(*) FROM conversations
-		  WHERE agent_user_id = ? AND call_type = ? AND ended_at IS NULL`,
-		userID, callTypeChat).Scan(&n)
-	return n
+// chatInactiveAfter is how long without a visitor message before a chat stops
+// consuming capacity. It does NOT end the conversation — the agent keeps it in
+// their list and the visitor can resume it; it only stops the abandoned ones
+// from occupying the agent forever.
+//
+// 10 minutes matches the default the mature platforms converged on, and like
+// theirs it is configurable rather than baked in.
+func chatInactiveAfter() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("CHAT_INACTIVE_MINUTES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Minute
+		}
+	}
+	return 10 * time.Minute
+}
+
+// agentLoad is one agent's current workload, by modality.
+type agentLoad struct {
+	userID int64
+	chats  int  // ACTIVE chats only
+	onCall bool // audio or video in progress
+	live   bool // console open right now
+}
+
+// capacityFor reports how many of a modality an agent may hold at once.
+//
+// The asymmetry is physical, not a policy knob: chat is asynchronous and
+// multiplexable, so several at once is normal work. A call is synchronous and
+// exclusive — one voice, one pair of ears — so its capacity is 1 and no setting
+// should be able to raise it. Pretending otherwise would just produce calls
+// nobody can answer.
+func capacityFor(callType string) int {
+	if callType == callTypeChat {
+		return maxConcurrentChats()
+	}
+	return 1
+}
+
+// agentLoads reads current workload for every candidate agent in one pass.
+func agentLoads(db *sql.DB, cutoff int64) map[int64]*agentLoad {
+	out := map[int64]*agentLoad{}
+	rows, err := db.Query(
+		`SELECT agent_user_id, call_type, last_activity_at
+		   FROM conversations WHERE ended_at IS NULL`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid, act int64
+		var ct string
+		if err := rows.Scan(&uid, &ct, &act); err != nil {
+			continue
+		}
+		l := out[uid]
+		if l == nil {
+			l = &agentLoad{userID: uid}
+			out[uid] = l
+		}
+		if ct == callTypeChat {
+			// Inactive chats do not count. This is the whole reason an
+			// abandoned conversation no longer takes an agent out of rotation.
+			if act > cutoff {
+				l.chats++
+			}
+			continue
+		}
+		// A call in progress is exclusive regardless of how long it has been
+		// quiet — silence on a call means listening, not absence.
+		l.onCall = true
+	}
+	return out
+}
+
+// routeAgent picks who should take a new conversation.
+//
+// Capacity SORTS, it does not gate — the visitor is never turned away because
+// of an agent-side accounting number. Least-loaded first, live consoles ahead
+// of push-only ones. The bool reports whether the chosen agent actually has
+// spare capacity, so the caller can set the visitor's expectation honestly
+// (and, for a call, offer a channel that can be served right now).
+func routeAgent(db *sql.DB, ref, callType string) (int64, bool) {
+	live := hub.liveAgentUserIDs(ref)
+	cutoff := time.Now().Add(-chatInactiveAfter()).Unix()
+	loads := agentLoads(db, cutoff)
+
+	rows, err := db.Query(
+		`SELECT a.user_id, a.chat_ok, a.audio_ok, a.video_ok
+		   FROM agent_availability a
+		   JOIN users u ON u.id = a.user_id AND u.active = 1
+		  WHERE a.available = 1`)
+	if err != nil {
+		return 0, false
+	}
+	defer rows.Close()
+
+	var bestID int64
+	bestScore := 1 << 30
+	bestSpare := false
+	for rows.Next() {
+		var uid int64
+		var chatOK, audioOK, videoOK int
+		if err := rows.Scan(&uid, &chatOK, &audioOK, &videoOK); err != nil {
+			continue
+		}
+		m := modes{Chat: chatOK == 1, Audio: audioOK == 1, Video: videoOK == 1}
+		if !m.allows(callType) {
+			continue // they do not offer this modality at all
+		}
+		l := loads[uid]
+		if l == nil {
+			l = &agentLoad{userID: uid}
+		}
+		used := l.chats
+		if callType != callTypeChat {
+			if l.onCall {
+				used = 1
+			} else {
+				used = 0
+			}
+		}
+		spare := used < capacityFor(callType)
+		// Rank: spare capacity first, then live console, then least loaded.
+		score := used
+		if !spare {
+			score += 1000
+		}
+		if !live[uid] {
+			score += 100
+		}
+		if score < bestScore {
+			bestScore, bestID, bestSpare = score, uid, spare
+		}
+	}
+	return bestID, bestSpare
 }
 
 // ───────────────────────── HTTP ─────────────────────────────────────────────
@@ -212,8 +342,10 @@ func agentOpenChatCount(db *sql.DB, userID int64) int {
 func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	var body struct {
-		Ref          string `json:"ref"`
-		AgentUserID  int64  `json:"agentUserId"`
+		Ref string `json:"ref"`
+		// No agentUserId: ROUTING IS A SERVER CONCERN. The client used to pick
+		// the agent, which meant trusting it to honour availability, modality
+		// and load — and let it target one agent deliberately. The server picks.
 		CallType     string `json:"callType"`
 		GuestSession string `json:"guestSession"`
 		GuestName    string `json:"guestName"`
@@ -222,7 +354,7 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		errJSON(w, 400, "bad json")
 		return
 	}
-	if body.Ref == "" || body.AgentUserID == 0 || body.GuestSession == "" {
+	if body.Ref == "" || body.GuestSession == "" {
 		errJSON(w, 400, "missing fields")
 		return
 	}
@@ -243,17 +375,15 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		errJSON(w, 400, err.Error())
 		return
 	}
-	// The agent must be available AND take this modality. Same gate the ring
-	// path applies, enforced here too so a conversation is never created for a
-	// contact that could not be delivered.
-	if !userTakesCallType(db, body.AgentUserID, body.CallType) {
-		errJSON(w, 409, "agent unavailable")
-		return
-	}
-	// Concurrency governor: chat may run alongside a call, but not without
-	// bound. Enforced server-side because a stale roster is the normal case.
-	if body.CallType == callTypeChat && agentOpenChatCount(db, body.AgentUserID) >= maxConcurrentChats() {
-		errJSON(w, 429, "agent at chat capacity")
+	// Route. Capacity SORTS here, it never gates: a visitor is not turned away
+	// because of an agent-side accounting number. This replaced a 429 that made
+	// an abandoned test chat permanently unreachable for everyone.
+	agentID, hasSpare := routeAgent(db, body.Ref, body.CallType)
+	if agentID == 0 {
+		// Genuinely nobody offers this modality right now. That is a real fact
+		// about the world, not a capacity decision, and the visitor is told so
+		// they can pick another channel or leave a message.
+		errJSON(w, 409, "no agent offers this channel right now")
 		return
 	}
 
@@ -264,7 +394,7 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 	}
 	conv := conversation{
 		CID: cid, Ref: body.Ref, GuestSession: body.GuestSession,
-		GuestName: strings.TrimSpace(body.GuestName), AgentUserID: body.AgentUserID,
+		GuestName: strings.TrimSpace(body.GuestName), AgentUserID: agentID,
 		CallType: body.CallType, CreatedAt: time.Now().Unix(),
 	}
 	if err := createConversation(db, conv); err != nil {
@@ -276,10 +406,18 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		errJSON(w, 500, "internal error")
 		return
 	}
+	// `waiting` is the honest part. For chat it is almost cosmetic: the agent
+	// holds several at once and will get to it. For a CALL it is decisive —
+	// calls are exclusive, so an agent already on one cannot answer, and the
+	// visitor is better served by being offered chat now than by a ring nobody
+	// can pick up.
 	writeJSON(w, 200, map[string]any{
-		"cid":     cid,
-		"token":   tok,
-		"channel": convChannel(cid),
+		"cid":      cid,
+		"token":    tok,
+		"channel":  convChannel(cid),
+		"agentId":  agentID,
+		"waiting":  !hasSpare,
+		"callType": body.CallType,
 	})
 }
 
@@ -419,6 +557,13 @@ func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Requ
 		errJSON(w, 500, "store failed")
 		return
 	}
+	// Only a VISITOR message refreshes activity. An agent replying into a thread
+	// the visitor has abandoned must not keep that slot occupied — otherwise an
+	// agent could hold their own capacity open indefinitely without meaning to.
+	if t.Role == convRoleGuest {
+		_, _ = db.Exec(`UPDATE conversations SET last_activity_at = ? WHERE cid = ?`, now, body.CID)
+	}
+
 	id, _ := res.LastInsertId()
 	msg := map[string]any{
 		"id": id, "cid": body.CID, "sender": t.Role, "body": text, "created_at": now,

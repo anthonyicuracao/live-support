@@ -277,11 +277,16 @@ window.Shared = (() => {
   // Guest side: ask the server to create a conversation. The server decides
   // whether it may exist (agent available, takes this modality, has chat
   // capacity) and mints the guest's capability.
-  async function startConversation({ ref, agentUserId, callType, guestSession, guestName }) {
+  // No agentUserId: routing is a SERVER concern. The client used to choose the
+  // agent, which meant trusting it to honour availability, modality and load —
+  // and let it target one agent deliberately. The server picks the least-loaded
+  // one who offers this channel, and reports `waiting` when none has spare
+  // capacity, so the UI can be honest instead of pretending.
+  async function startConversation({ ref, callType, guestSession, guestName }) {
     const resp = await fetch("/api/conversation/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref, agentUserId, callType, guestSession, guestName }),
+      body: JSON.stringify({ ref, callType, guestSession, guestName }),
     });
     if (!resp.ok) {
       let reason = "unavailable";

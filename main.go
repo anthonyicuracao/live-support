@@ -234,7 +234,14 @@ CREATE TABLE IF NOT EXISTS conversations (
   agent_user_id INTEGER NOT NULL,
   call_type     TEXT    NOT NULL,
   created_at    INTEGER NOT NULL,
-  ended_at      INTEGER
+  ended_at      INTEGER,
+  -- Activity state, kept separate from lifecycle (ended_at). A conversation
+  -- with no recent visitor message is INACTIVE: it still exists and still shows
+  -- in the agent's list, but it stops consuming capacity. Zendesk reaches the
+  -- same split and defaults to not counting inactive conversations; without it,
+  -- an abandoned chat occupies a slot forever and the agent silently stops
+  -- being routed work.
+  last_activity_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_user_id, ended_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_ref ON conversations(ref);
@@ -300,6 +307,13 @@ func openDB(path string) (*sql.DB, error) {
 	// the video toggle, while video_ok is INTENT (am I taking video calls).
 	// Conflating them is what made "I have a camera but I'm only taking chat"
 	// impossible to express.
+	var hasLastActivity int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'last_activity_at'`).Scan(&hasLastActivity)
+	if hasLastActivity == 0 {
+		_, _ = d.Exec(`ALTER TABLE conversations ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0`)
+		_, _ = d.Exec(`UPDATE conversations SET last_activity_at = created_at`)
+	}
+
 	var hasChatOK int
 	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('agent_availability') WHERE name = 'chat_ok'`).Scan(&hasChatOK)
 	if hasChatOK == 0 {

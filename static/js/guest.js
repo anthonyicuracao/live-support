@@ -415,15 +415,14 @@
   async function openConversationWith(target, callType) {
     const started = await S.startConversation({
       ref: params.ref,
-      agentUserId: target.user_id,
       callType,
       guestSession: sessionId,
       guestName: params.name,
     });
     if (started.error) {
-      // 409 = the agent stopped being available between the roster refresh and
-      // the click; 429 = they are at chat capacity. Both are ordinary races,
-      // not failures worth alarming the guest about — refresh and re-render.
+      // 409 now means only one thing: nobody offers this channel right now.
+      // Capacity never refuses — it sorts — so a busy team still gets you a
+      // conversation, flagged `waiting`.
       refreshRestAgents();
       return { error: started.error, status: started.status };
     }
@@ -477,11 +476,24 @@
     const conv = await openConversationWith(target, callType);
     if (conv.error) {
       updateCallButtons();
-      showMessageForm(
-        conv.status === 429
-          ? "That agent is at capacity right now. Please leave a message."
-          : "That agent just became unavailable. Please leave a message."
-      );
+      showMessageForm("Nobody is taking calls right now. Please leave a message.");
+      return;
+    }
+    // A call is exclusive: an agent already on one cannot pick up, so ringing
+    // would just burn 30 seconds and end in "no answer". Chat is the honest
+    // alternative — it is available right now, and it is a real channel rather
+    // than a consolation prize. The conversation already exists, so switching
+    // costs the visitor nothing.
+    if (conv.waiting) {
+      updateCallButtons();
+      const anyChat = authUsers.some((u) => u.modes && u.modes.chat);
+      if (anyChat) {
+        currentCallChannel = S.openConversation(conv, { onMessage: (m) => IM.receive(m) });
+        IM.open({ cid: conv.cid, token: conv.token, name: "Live Support" });
+        showAlert("Everyone is on a call right now — you can chat instead and we'll reply here.");
+      } else {
+        showMessageForm("Everyone is on a call right now. Please leave a message.");
+      }
       return;
     }
 
