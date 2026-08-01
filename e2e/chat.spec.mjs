@@ -227,12 +227,26 @@ async function textsOf(page, selector) {
       return (last.className.match(/im-tick--(\w+)/) || [])[1] || "unknown";
     });
 
-    await guest.waitForTimeout(1500);
+    await guest.waitForTimeout(2000);
     const guestTick = await tickState(guest);
+    // Report the SERVER's view too: a tick stuck at "sent" means either the
+    // receipt was never sent, or it was recorded and the sender never heard.
+    // Those are different bugs and the tick alone cannot tell them apart.
+    const serverView = await guest.evaluate(async () => {
+      const t = window.__convForTest;
+      if (!t) return "no conv";
+      const qs = new URLSearchParams({ ref: t.ref, cid: t.cid, token: t.token });
+      const r = await fetch(`/api/conversation/messages?${qs}`);
+      if (!r.ok) return `HTTP ${r.status}`;
+      const j = await r.json();
+      const mine = (j.messages || []).filter((m) => m.sender === "guest");
+      const last = mine[mine.length - 1];
+      return last ? `delivered_at=${last.delivered_at} read_at=${last.read_at}` : "no messages";
+    }).catch((e) => "probe failed: " + e.message);
     check(
       "the visitor's message shows delivered or read, not just sent",
       guestTick === "delivered" || guestTick === "read",
-      `tick state is "${guestTick}" — the agent's receipt never came back`
+      `tick="${guestTick}"; server says ${serverView}`
     );
 
     // ── a message sent while the guest is OFFLINE still arrives ──────────

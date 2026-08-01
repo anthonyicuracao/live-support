@@ -1237,6 +1237,9 @@
     // that restriction with an actual permission.
     function open({ cid, token, name, picture }) {
       conv = { cid, token };
+      // Test hook: lets e2e ask the SERVER what it thinks the receipt state is,
+      // which is the only way to tell "never sent" from "never heard back".
+      window.__convForTest = { cid, token, ref: params.ref };
       activeAdminId = cid;
       if (!threads.has(cid)) {
         threads.set(cid, { id: cid, name: name || "Agent", picture: picture || "", messages: [] });
@@ -1278,15 +1281,35 @@
     }
 
     // The other side acknowledged us: move our ticks.
+    // Receipt high-water marks, kept per thread.
+    //
+    // A receipt can arrive BEFORE the sender learns its own message id: the
+    // recipient acknowledges the moment they render, which can beat our own
+    // POST response. Applying receipts only to messages that already have ids
+    // silently drops those, and nothing ever re-applies them — the tick then
+    // sits on "sent" forever even though the server has both timestamps.
+    //
+    // So the marks are remembered and re-applied when an id lands.
+    function applyMarks(t, m) {
+      if (!m || m.dir !== "out" || !m.id) return;
+      if (t.ackDelivered && m.id <= t.ackDelivered) m.deliveredAt = m.deliveredAt || t.ackDeliveredAt;
+      if (t.ackRead && m.id <= t.ackRead) {
+        m.readAt = m.readAt || t.ackReadAt;
+        m.deliveredAt = m.deliveredAt || t.ackReadAt;
+      }
+    }
+
     function applyReceipt(r) {
       if (!conv || !r || r.by === "guest") return; // our own acks are not news
       const t = threads.get(conv.cid);
       if (!t) return;
-      for (const m of t.messages) {
-        if (m.dir !== "out" || !m.id || m.id > r.upToId) continue;
-        if (r.kind === "delivered") m.deliveredAt = m.deliveredAt || r.at;
-        if (r.kind === "read") { m.readAt = m.readAt || r.at; m.deliveredAt = m.deliveredAt || r.at; }
+      if (r.kind === "delivered" && r.upToId > (t.ackDelivered || 0)) {
+        t.ackDelivered = r.upToId; t.ackDeliveredAt = r.at;
       }
+      if (r.kind === "read" && r.upToId > (t.ackRead || 0)) {
+        t.ackRead = r.upToId; t.ackReadAt = r.at;
+      }
+      for (const m of t.messages) applyMarks(t, m);
       renderMessages();
     }
 
@@ -1344,6 +1367,7 @@
       });
       if (saved && saved.message) {
         pending.id = saved.message.id; // now "sent"
+        applyMarks(t, pending);        // ...and possibly already acknowledged
         renderMessages();
       }
     }

@@ -2373,15 +2373,28 @@
       if (top) S.sendReceipt({ ref, cid: t.conv.cid, token: t.conv.token, upToId: top, kind: "read" });
     }
 
+    // See the guest side: a receipt can beat our own POST response, so the
+    // marks are remembered per thread and re-applied when an id lands.
+    function applyMarks(t, m) {
+      if (!m || m.dir !== "out" || !m.id) return;
+      if (t.ackDelivered && m.id <= t.ackDelivered) m.deliveredAt = m.deliveredAt || t.ackDeliveredAt;
+      if (t.ackRead && m.id <= t.ackRead) {
+        m.readAt = m.readAt || t.ackReadAt;
+        m.deliveredAt = m.deliveredAt || t.ackReadAt;
+      }
+    }
+
     function applyReceipt(r) {
       if (!r || r.by === "agent") return; // our own acks are not news
       for (const [, t] of threads) {
         if (!t.conv) continue;
-        for (const m of t.messages) {
-          if (m.dir !== "out" || !m.id || m.id > r.upToId) continue;
-          if (r.kind === "delivered") m.deliveredAt = m.deliveredAt || r.at;
-          if (r.kind === "read") { m.readAt = m.readAt || r.at; m.deliveredAt = m.deliveredAt || r.at; }
+        if (r.kind === "delivered" && r.upToId > (t.ackDelivered || 0)) {
+          t.ackDelivered = r.upToId; t.ackDeliveredAt = r.at;
         }
+        if (r.kind === "read" && r.upToId > (t.ackRead || 0)) {
+          t.ackRead = r.upToId; t.ackReadAt = r.at;
+        }
+        for (const m of t.messages) applyMarks(t, m);
       }
       renderMessages();
     }
@@ -2544,6 +2557,7 @@
         });
         if (saved && saved.message) {
           pending.id = saved.message.id;
+          applyMarks(t, pending); // may already have been acknowledged
           renderMessages();
         }
         return;
