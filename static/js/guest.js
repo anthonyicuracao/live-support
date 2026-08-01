@@ -1157,6 +1157,11 @@
         if (data.sender === "guest") return; // our own echo
         const ct = threads.get(data.cid);
         if (!ct) return;
+        ct.seen = ct.seen || new Set();
+        if (data.id != null) {
+          if (ct.seen.has(data.id)) return; // already rendered
+          ct.seen.add(data.id);
+        }
         ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000 });
         activeAdminId = data.cid;
         S.showSection(".im");
@@ -1211,11 +1216,15 @@
       S.loadTranscript({ ref: params.ref, cid, token }).then((res) => {
         const t = threads.get(cid);
         if (!t || !res.messages || !res.messages.length) return;
-        t.messages = res.messages.map((m) => ({
-          dir: m.sender === "guest" ? "out" : "in",
-          text: m.body,
-          ts: m.created_at * 1000,
-        }));
+        t.seen = new Set();
+        t.messages = res.messages.map((m) => {
+          if (m.id != null) t.seen.add(m.id);
+          return {
+            dir: m.sender === "guest" ? "out" : "in",
+            text: m.body,
+            ts: m.created_at * 1000,
+          };
+        });
         renderMessages();
       });
     }

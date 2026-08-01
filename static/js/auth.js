@@ -1441,7 +1441,11 @@
       // Chat rings arrive here too: show the thread and everything already said
       // rather than an empty dock the guest cannot tell apart from being ignored.
       if (data.callType === "chat") {
-        IM.open({ cid: data.cid, token: t.token, name: t.guestName || data.callerName });
+        IM.open({
+          cid: data.cid, token: t.token,
+          name: t.guestName || data.callerName,
+          guestSession: t.guestSession,
+        });
         state = "ready";
         return;
       }
@@ -2157,12 +2161,24 @@
         .filter((u) => u.session_id && u.session_id !== sessionId)
         .map((u) => ({ id: u.session_id, name: u.name || "Unknown", role: u.role || "guest", picture: u.picture || "" }));
       const onlineIds = new Set(roster.map((u) => u.id));
-      // Mark existing threads online/offline so we can still show history for
-      // someone who just went offline.
-      for (const [id, t] of threads) t.online = onlineIds.has(id);
+
+      // A visitor with an open conversation is listed by CID, not by presence
+      // session id. Drop the presence duplicate, or the same person appears
+      // twice — once per key — which is exactly what happened.
+      const convSessions = new Set();
+      for (const [, t] of threads) if (t.guestSession) convSessions.add(t.guestSession);
+      roster = roster.filter((u) => !convSessions.has(u.id));
+
+      // Mark threads online/offline so history still shows for someone who has
+      // just left. A conversation thread resolves its liveness through the
+      // visitor's session id — a cid has no presence record of its own, which
+      // is why these threads were all rendering "(offline)".
+      for (const [id, t] of threads) {
+        t.online = t.guestSession ? onlineIds.has(t.guestSession) : onlineIds.has(id);
+      }
       // Header label: "Chats" + a live count of people available to chat.
       if (dockTitle) {
-        const chatCount = roster.length;
+        const chatCount = roster.length + convSessions.size;
         dockTitle.textContent = chatCount ? `Chats (${chatCount})` : "Chats";
       }
       renderRoster();
@@ -2245,6 +2261,24 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // addMessage appends unless this exact message is already present.
+    //
+    // A message can legitimately reach a console by two routes: the
+    // conversation channel it is subscribed to, and the user-inbox
+    // notification that exists for consoles which are NOT yet subscribed.
+    // Rather than trying to make the routes mutually exclusive — which breaks
+    // the moment one is slow — they are made idempotent by server-assigned id.
+    function addMessage(t, m, dir) {
+      if (!m) return false;
+      t.seen = t.seen || new Set();
+      if (m.id != null) {
+        if (t.seen.has(m.id)) return false;
+        t.seen.add(m.id);
+      }
+      t.messages.push({ dir, text: m.body, ts: (m.created_at || 0) * 1000 });
+      return true;
+    }
+
     // deliver(): a visitor's chat message arrived.
     //
     // Selection rule (Ron, 2026-08-01): auto-select the thread when the agent
@@ -2263,17 +2297,26 @@
         // capability so replies can go back over it.
         const tok = await S.agentConversationToken(cid);
         if (tok.error) return;
+        const gs = data.guestSession || tok.guestSession || "";
+        // The SAME visitor may already be listed from presence, keyed by their
+        // session id. Absorb that entry rather than adding a second one — they
+        // were showing up twice, and the presence-keyed twin also read
+        // "(offline)" because a cid has no presence record of its own.
+        const twin = gs ? threads.get(gs) : null;
         t = {
-          id: cid, name: data.guestName || tok.guestName || "Visitor",
-          picture: "", role: "guest", messages: [], unread: 0,
+          id: cid, name: data.guestName || tok.guestName || (twin && twin.name) || "Visitor",
+          picture: (twin && twin.picture) || "", role: "guest",
+          guestSession: gs, online: twin ? twin.online : true,
+          messages: twin ? twin.messages : [], unread: 0,
           conv: { cid, token: tok.token },
         };
+        if (twin) threads.delete(gs);
         threads.set(cid, t);
         S.openConversation({ channel: tok.channel, token: tok.token },
           { onMessage: (m) => receive(m) });
       }
 
-      t.messages.push({ dir: "in", text: data.message.body, ts: (data.message.created_at || 0) * 1000 });
+      if (!addMessage(t, data.message, "in")) return; // already have it
       t.awaitingReply = true;
 
       const active = activePeerId ? threads.get(activePeerId) : null;
@@ -2298,12 +2341,18 @@
     // guest-initiated chat — a push-woken console opening to an empty dock
     // while the guest can see everything they typed is exactly the asymmetry
     // the transcript exists to remove.
-    function open({ cid, token, name: peerName, picture: peerPicture }) {
+    function open({ cid, token, name: peerName, picture: peerPicture, guestSession }) {
       activePeerId = cid;
       if (!threads.has(cid)) {
+        // Absorb a presence-keyed entry for the same visitor, same as deliver().
+        const twin = guestSession ? threads.get(guestSession) : null;
+        if (twin) threads.delete(guestSession);
         threads.set(cid, {
-          id: cid, name: peerName || "Visitor", picture: peerPicture || "",
-          role: "guest", messages: [],
+          id: cid, name: peerName || (twin && twin.name) || "Visitor",
+          picture: peerPicture || (twin && twin.picture) || "",
+          role: "guest", guestSession: guestSession || "",
+          online: twin ? twin.online : true,
+          messages: twin ? twin.messages : [],
         });
       }
       // Per-thread, not a single module-level `conv`: an agent may hold several
@@ -2316,11 +2365,13 @@
       S.loadTranscript({ ref, cid, token }).then((res) => {
         const t = threads.get(cid);
         if (!t || !res.messages || !res.messages.length) return;
-        t.messages = res.messages.map((m) => ({
-          dir: m.sender === "agent" ? "out" : "in",
-          text: m.body,
-          ts: m.created_at * 1000,
-        }));
+        // Rebuild from the record, then mark every id seen so a live broadcast
+        // that overlaps the transcript is not appended a second time.
+        t.messages = [];
+        t.seen = new Set();
+        for (const m of res.messages) {
+          addMessage(t, m, m.sender === "agent" ? "out" : "in");
+        }
         renderMessages();
       });
     }
@@ -2386,7 +2437,7 @@
         if (data.sender === "agent") return; // our own echo
         const ct = threads.get(data.cid);
         if (!ct) return;
-        ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000 });
+        if (!addMessage(ct, data, "in")) return; // same message via another path
         ct.awaitingReply = true;
         const visible =
           data.cid === activePeerId && !section.classList.contains("im-collapsed");

@@ -452,11 +452,12 @@ func (a *authApp) conversationTokenHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"cid":       cid,
-		"token":     tok,
-		"channel":   convChannel(cid),
-		"callType":  conv.CallType,
-		"guestName": conv.GuestName,
+		"cid":          cid,
+		"token":        tok,
+		"channel":      convChannel(cid),
+		"callType":     conv.CallType,
+		"guestName":    conv.GuestName,
+		"guestSession": conv.GuestSession,
 	})
 }
 
@@ -577,14 +578,27 @@ func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Requ
 	// This is why chat does not go through /api/call/ring: ringing implies an
 	// accept/decline decision with a 30s deadline and a repeating alert, none of
 	// which fit a message someone typed.
+	// ONE broadcast, from the server, to the conversation channel. The client
+	// used to publish this itself, which meant a subscribed console received the
+	// message twice — once here and once over the channel — and rendered it
+	// twice. The server is the only writer now.
+	convMsg, _ := json.Marshal(msg)
+	hub.broadcast(convChannel(body.CID), "message", convMsg)
+
 	if t.Role == convRoleGuest {
 		conv, cerr := conversationByCID(db, body.CID)
 		if cerr == nil {
+			// Separate notification for consoles that have NOT subscribed to
+			// this conversation yet (they cannot have: they had no capability
+			// for it). Carries guestSession so the console can recognise this
+			// as the SAME person it already lists from presence, instead of
+			// showing them twice under two different keys.
 			notify, _ := json.Marshal(map[string]any{
-				"type":      "chat-message",
-				"cid":       body.CID,
-				"guestName": conv.GuestName,
-				"message":   msg,
+				"type":         "chat-message",
+				"cid":          body.CID,
+				"guestName":    conv.GuestName,
+				"guestSession": conv.GuestSession,
+				"message":      msg,
 			})
 			hub.broadcast(userInboxChannel(conv.Ref, conv.AgentUserID), "message", notify)
 			// And wake a closed console. One notification, not the ring loop.

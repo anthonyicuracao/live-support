@@ -339,9 +339,9 @@ window.Shared = (() => {
       body: JSON.stringify({ ref, cid, token, sender, body }),
     });
     if (!resp.ok) return { error: "send failed", status: resp.status };
-    const saved = await resp.json();
-    await window.Realtime.publish(`conv:${cid}`, "message", saved.message, { token });
-    return saved;
+    // No client-side publish: the SERVER broadcasts to the conversation
+    // channel. Doing both delivered every message twice to anyone subscribed.
+    return await resp.json();
   }
 
   // The transcript, so a fresh console shows what the guest already said.
