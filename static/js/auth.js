@@ -2095,7 +2095,6 @@
     // peerId -> { id, name, role, online, messages:[{dir,text,ts}], unread }
     const threads = new Map();
     let activePeerId = null;
-    let conv = null; // { cid, token } when the active thread is a conversation
     let roster = []; // latest presence snapshot (excluding self)
 
     if (!section) {
@@ -2245,7 +2244,6 @@
     // while the guest can see everything they typed is exactly the asymmetry
     // the transcript exists to remove.
     function open({ cid, token, name: peerName, picture: peerPicture }) {
-      conv = { cid, token };
       activePeerId = cid;
       if (!threads.has(cid)) {
         threads.set(cid, {
@@ -2253,6 +2251,10 @@
           role: "guest", messages: [],
         });
       }
+      // Per-thread, not a single module-level `conv`: an agent may hold several
+      // conversations at once (that is the whole point of the chat governor),
+      // and switching threads must not send into the previous one.
+      threads.get(cid).conv = { cid, token };
       S.showSection(".im");
       section.classList.remove("im-collapsed");
       renderMessages();
@@ -2272,13 +2274,40 @@
       if (!activePeerId || !text) return;
       const t = threads.get(activePeerId);
       if (!t) return;
+
+      // A guest thread opened from the roster has no conversation yet — its id
+      // is the visitor's presence session id, not a cid. Create one on demand
+      // so the agent can simply start typing.
+      //
+      // Without this the send fell through to the agent-to-agent inbox path,
+      // which the server now refuses, and the message vanished with no error:
+      // exactly the silent failure this work exists to remove.
+      if (!t.conv && t.role === "guest") {
+        const invited = await S.inviteGuest({
+          guestSession: t.id,
+          guestName: t.name,
+          callType: "chat",
+          callerName: displayName,
+        });
+        if (invited.error) {
+          console.error("[IM] could not open a conversation with", t.name, invited);
+          return;
+        }
+        t.conv = { cid: invited.cid, token: invited.token };
+        // Subscribe so their replies arrive on this console.
+        S.openConversation(
+          { channel: invited.channel, token: invited.token },
+          { onMessage: (m) => receive(m) }
+        );
+      }
+
       t.messages.push({ dir: "out", text, ts: Date.now() });
       renderMessages();
       // A conversation thread goes over its private channel; anything else is
       // still the agent-to-agent inbox.
-      if (conv && activePeerId === conv.cid) {
+      if (t.conv) {
         await S.sendConversationMessage({
-          ref, cid: conv.cid, token: conv.token, body: text,
+          ref, cid: t.conv.cid, token: t.conv.token, body: text,
         });
         return;
       }

@@ -79,8 +79,14 @@ func safePrefix(s string, n int) string {
 // presence session_id still finds the call it was rung for.
 
 type pendingInvite struct {
-	ref       string
-	userID    int64
+	ref    string
+	userID int64
+	// cid is the conversation this ring belongs to. Without it a console that
+	// picks the ring up from the PENDING path (rather than the live WS fan-out)
+	// has no way to obtain its capability, so it cannot open the conversation —
+	// it fell through to the call UI, and a chat looked like an audio call that
+	// then went silent because nobody was ever subscribed.
+	cid       string
 	callID    string
 	fromName  string
 	callType  string
@@ -382,6 +388,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 	putInvite(pendingInvite{
 		ref:      body.Ref,
 		userID:   userID,
+		cid:      body.CID,
 		callID:   body.CallID,
 		fromName: callerName,
 		callType: callType,
@@ -405,6 +412,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		payload, _ := json.Marshal(map[string]any{
 			"type":       "incoming-call",
 			"ref":        body.Ref,
+			"cid":        body.CID,
 			"callId":     body.CallID,
 			"callType":   callType,
 			"callerName": callerName,
@@ -466,6 +474,7 @@ func callPendingHandler(w http.ResponseWriter, r *http.Request) {
 	out := make([]map[string]any, 0, len(list))
 	for _, inv := range list {
 		out = append(out, map[string]any{
+			"cid":        inv.cid,
 			"callId":     inv.callID,
 			"callType":   inv.callType,
 			"callerName": inv.fromName,
