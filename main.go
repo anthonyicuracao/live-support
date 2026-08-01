@@ -1934,7 +1934,7 @@ func main() {
 	})
 	if devMode {
 		log.Println("[Server] DEV_MODE is ON — auth.html JWT validation can be bypassed with ?dev=true")
-		log.Println("[Server] DEV_MODE is ON — /dev/sso will mint sign-in links for ANY user")
+		log.Println("[Server] DEV_MODE is ON — /dev/token will sign a sign-in for ANY user")
 	}
 
 	// Optional brand color. PRIMARY_COLOR overrides the CSS --primary variable
@@ -2022,36 +2022,34 @@ func main() {
 	// toggle's server-side truth + closed-tab agent discovery for guests.
 	mountAvailability(mux, auth)
 
-	// GET /dev/sso?ref=&user=&role= — mint a real sign-in for local development.
+	// GET /dev/token?ref=&user=&role= — the LOCAL equivalent of the platform's
+	// /v1/signAppliance, for development.
 	//
-	// Why this exists: a managed tenant's SSO token is minted by the PLATFORM
-	// lambda with the platform's secret, while a dev box's appliance holds its
-	// own. So the admin's Live Support button produced a token this appliance
-	// could not verify — correctly rejected, and unfixable from the caller's
-	// side without putting a production secret on a developer's disk.
+	// A token, not a sign-in: the appliance already has exactly one sign-in
+	// entry point, /sso?t=. How the token was signed is none of its business,
+	// and adding a second entry point to express "signed differently" was the
+	// wrong shape. Only the SIGNER varies by environment — production uses the
+	// platform lambda, a dev box uses this — and the URL the caller navigates to
+	// is identical either way.
 	//
-	// The environment that OWNS the appliance mints the token instead. Same
-	// principle as resolving the appliance URL per environment: the dev
-	// instance is self-consistent rather than half-wired to production.
+	// Why it has to exist at all: a managed token is signed with the PLATFORM's
+	// secret, and a dev appliance holds its own, so a platform-signed token can
+	// never verify here. The alternative is a production secret on a developer's
+	// disk.
 	//
-	// This is a total authentication bypass, so it is gated twice:
-	//   1. DEV_MODE=true, which is off by default and never set in production;
-	//   2. the listener must not be reachable off-box. That is a NETWORK
-	//      control, not an application one: inside a container every request
-	//      from the host arrives from the bridge gateway, and Docker's SNAT
-	//      makes host traffic indistinguishable from LAN traffic — so an
-	//      in-process "is this loopback" test cannot work there and would only
-	//      look like protection. docker-compose.local.yml publishes this port
-	//      on 127.0.0.1 instead, which actually holds.
-	//
-	// The remaining check is defence in depth, not the gate: it refuses a
-	// request that demonstrably arrived from a public address, which is the one
-	// misconfiguration it can still catch.
-	mux.HandleFunc("GET /dev/sso", func(w http.ResponseWriter, r *http.Request) {
+	// This mints a session for any user, so it is a total authentication bypass,
+	// gated on DEV_MODE — off by default, never set on a deployed host. The
+	// listener not being reachable off-box is a NETWORK control
+	// (docker-compose.local.yml publishes on 127.0.0.1); an in-process address
+	// test cannot express it inside a container, where Docker SNATs host traffic
+	// to the bridge gateway and host and LAN look identical. The address check
+	// below is defence in depth for the one case it can still catch.
+	mux.HandleFunc("GET /dev/token", func(w http.ResponseWriter, r *http.Request) {
 		if !devMode || !isLocalOrPrivateRequest(r) {
 			http.NotFound(w, r) // indistinguishable from the route not existing
 			return
 		}
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		ref := strings.TrimSpace(r.URL.Query().Get("ref"))
 		user := strings.TrimSpace(r.URL.Query().Get("user"))
 		if ref == "" || user == "" {
@@ -2067,8 +2065,8 @@ func main() {
 			errJSON(w, 500, "internal error")
 			return
 		}
-		log.Printf("[DevSSO] minted a sign-in for %s@%s (role %s)", user, ref, role)
-		http.Redirect(w, r, "/sso?t="+url.QueryEscape(tok), http.StatusSeeOther)
+		log.Printf("[DevToken] signed a sign-in for %s@%s (role %s)", user, ref, role)
+		writeJSON(w, 200, map[string]any{"token": tok})
 	})
 
 	// Serve the PWA manifest with the correct type (Go's MIME table has no
