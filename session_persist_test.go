@@ -319,3 +319,32 @@ func TestWSSessionToken(t *testing.T) {
 		}
 	})
 }
+
+// /dev/sso mints a real sign-in for ANY user, so it is a total authentication
+// bypass and both of its gates have to hold. Pinned deliberately: this is the
+// kind of convenience route that quietly becomes an open door.
+func TestDevSSOIsDoublyGated(t *testing.T) {
+	t.Run("address classification", func(t *testing.T) {
+		cases := []struct {
+			remote string
+			want   bool
+			why    string
+		}{
+			{"127.0.0.1:5555", true, "loopback"},
+			{"[::1]:5555", true, "IPv6 loopback"},
+			{"172.17.0.1:5555", true, "Docker bridge gateway — what the host looks like from inside a container"},
+			{"192.168.1.50:5555", true, "LAN; allowed because SNAT makes it indistinguishable from the host"},
+			{"203.0.113.7:5555", false, "public address — the one case this can still refuse"},
+			{"8.8.8.8:5555", false, "public address"},
+			{"", false, "unparseable"},
+			{"not-an-address", false, "unparseable"},
+		}
+		for _, c := range cases {
+			r := httptest.NewRequest("GET", "/dev/sso", nil)
+			r.RemoteAddr = c.remote
+			if got := isLocalOrPrivateRequest(r); got != c.want {
+				t.Errorf("isLocalOrPrivateRequest(%q) = %v, want %v (%s)", c.remote, got, c.want, c.why)
+			}
+		}
+	})
+}

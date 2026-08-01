@@ -33,6 +33,7 @@ import (
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1933,6 +1934,7 @@ func main() {
 	})
 	if devMode {
 		log.Println("[Server] DEV_MODE is ON — auth.html JWT validation can be bypassed with ?dev=true")
+		log.Println("[Server] DEV_MODE is ON — /dev/sso will mint sign-in links for ANY user")
 	}
 
 	// Optional brand color. PRIMARY_COLOR overrides the CSS --primary variable
@@ -2020,6 +2022,55 @@ func main() {
 	// toggle's server-side truth + closed-tab agent discovery for guests.
 	mountAvailability(mux, auth)
 
+	// GET /dev/sso?ref=&user=&role= — mint a real sign-in for local development.
+	//
+	// Why this exists: a managed tenant's SSO token is minted by the PLATFORM
+	// lambda with the platform's secret, while a dev box's appliance holds its
+	// own. So the admin's Live Support button produced a token this appliance
+	// could not verify — correctly rejected, and unfixable from the caller's
+	// side without putting a production secret on a developer's disk.
+	//
+	// The environment that OWNS the appliance mints the token instead. Same
+	// principle as resolving the appliance URL per environment: the dev
+	// instance is self-consistent rather than half-wired to production.
+	//
+	// This is a total authentication bypass, so it is gated twice:
+	//   1. DEV_MODE=true, which is off by default and never set in production;
+	//   2. the listener must not be reachable off-box. That is a NETWORK
+	//      control, not an application one: inside a container every request
+	//      from the host arrives from the bridge gateway, and Docker's SNAT
+	//      makes host traffic indistinguishable from LAN traffic — so an
+	//      in-process "is this loopback" test cannot work there and would only
+	//      look like protection. docker-compose.local.yml publishes this port
+	//      on 127.0.0.1 instead, which actually holds.
+	//
+	// The remaining check is defence in depth, not the gate: it refuses a
+	// request that demonstrably arrived from a public address, which is the one
+	// misconfiguration it can still catch.
+	mux.HandleFunc("GET /dev/sso", func(w http.ResponseWriter, r *http.Request) {
+		if !devMode || !isLocalOrPrivateRequest(r) {
+			http.NotFound(w, r) // indistinguishable from the route not existing
+			return
+		}
+		ref := strings.TrimSpace(r.URL.Query().Get("ref"))
+		user := strings.TrimSpace(r.URL.Query().Get("user"))
+		if ref == "" || user == "" {
+			errJSON(w, 400, "ref and user required")
+			return
+		}
+		role := r.URL.Query().Get("role")
+		if role != RoleAdmin {
+			role = RoleAgent
+		}
+		tok, err := mintApplianceToken(auth.ssoSecret, ref, user, role, "", 5*time.Minute)
+		if err != nil {
+			errJSON(w, 500, "internal error")
+			return
+		}
+		log.Printf("[DevSSO] minted a sign-in for %s@%s (role %s)", user, ref, role)
+		http.Redirect(w, r, "/sso?t="+url.QueryEscape(tok), http.StatusSeeOther)
+	})
+
 	// Serve the PWA manifest with the correct type (Go's MIME table has no
 	// .webmanifest entry, so it would otherwise fall back to text/plain).
 	_ = mime.AddExtensionType(".webmanifest", "application/manifest+json")
@@ -2087,4 +2138,22 @@ func main() {
 	log.Printf("[Server] Data dir (one SQLite DB per ref): %s", dataDir)
 	log.Printf("[Server] Listening on %s:%s", bindAddr, port)
 	log.Fatal(http.ListenAndServe(bindAddr+":"+port, mux))
+}
+
+// isLocalOrPrivateRequest reports whether a request arrived from a loopback or
+// private address.
+//
+// Deliberately NOT presented as "only from this machine". Behind Docker every
+// request from the host is SNAT'd to the bridge gateway, so host and LAN
+// traffic are indistinguishable at this layer and a strict loopback test simply
+// breaks the feature while protecting nothing. Keeping the port off public
+// interfaces is the control that works; this only catches the case where a
+// request provably came from a public address.
+func isLocalOrPrivateRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
