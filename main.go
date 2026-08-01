@@ -215,8 +215,40 @@ CREATE TABLE IF NOT EXISTS agent_availability (
   has_camera   INTEGER NOT NULL DEFAULT 0,
   picture      TEXT    NOT NULL DEFAULT '',
   online_since TEXT    NOT NULL DEFAULT '',
-  updated_at   TEXT    NOT NULL DEFAULT ''
+  updated_at   TEXT    NOT NULL DEFAULT '',
+  -- Per-modality intent. The available column stays the master switch ("am I
+  -- working"); these say what kind of work. See openDB for the backfill, and
+  -- for why has_camera (capability) is kept distinct from video_ok (intent).
+  chat_ok      INTEGER NOT NULL DEFAULT 1,
+  audio_ok     INTEGER NOT NULL DEFAULT 1,
+  video_ok     INTEGER NOT NULL DEFAULT 0
 );
+-- A private two-party conversation. cid is random and appears in no public
+-- response; it names the only channel the traffic flows over, and subscribing
+-- to that channel additionally requires a capability token (conversation.go).
+CREATE TABLE IF NOT EXISTS conversations (
+  cid           TEXT    PRIMARY KEY,
+  ref           TEXT    NOT NULL,
+  guest_session TEXT    NOT NULL,
+  guest_name    TEXT    NOT NULL DEFAULT '',
+  agent_user_id INTEGER NOT NULL,
+  call_type     TEXT    NOT NULL,
+  created_at    INTEGER NOT NULL,
+  ended_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_user_id, ended_at);
+CREATE INDEX IF NOT EXISTS idx_conversations_ref ON conversations(ref);
+-- Chat transcript. The live carrier is the conversation's WS channel; this is
+-- the record, so an agent woken by push into a fresh console sees what the
+-- guest already said instead of an empty thread.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  cid        TEXT    NOT NULL,
+  sender     TEXT    NOT NULL CHECK (sender IN ('guest','agent')),
+  body       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_cid ON chat_messages(cid, id);
 `
 
 func openDB(path string) (*sql.DB, error) {
@@ -251,6 +283,30 @@ func openDB(path string) (*sql.DB, error) {
 	if hasIsRead == 0 {
 		_, _ = d.Exec(`ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0`)
 		_, _ = d.Exec(`UPDATE messages SET is_read = 1`)
+	}
+
+	// Per-modality availability (CHAT-CHANNEL-PLAN.md Part A1). Same
+	// column-existence idiom as is_read above, for the same driver reason.
+	//
+	// Backfill on the one boot that adds the columns:
+	//   audio_ok = 1        every existing available agent takes audio today
+	//   video_ok = has_camera   discovery INFERRED video from the camera, so
+	//                           this preserves exactly what guests saw
+	//   chat_ok  = 1        Ron's call: chat needs no hardware, so every
+	//                       available agent becomes chat-available on deploy
+	//
+	// has_camera is kept alongside video_ok on purpose: it is a CAPABILITY
+	// fact (is there a camera) and still drives whether the console may offer
+	// the video toggle, while video_ok is INTENT (am I taking video calls).
+	// Conflating them is what made "I have a camera but I'm only taking chat"
+	// impossible to express.
+	var hasChatOK int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('agent_availability') WHERE name = 'chat_ok'`).Scan(&hasChatOK)
+	if hasChatOK == 0 {
+		_, _ = d.Exec(`ALTER TABLE agent_availability ADD COLUMN chat_ok INTEGER NOT NULL DEFAULT 1`)
+		_, _ = d.Exec(`ALTER TABLE agent_availability ADD COLUMN audio_ok INTEGER NOT NULL DEFAULT 1`)
+		_, _ = d.Exec(`ALTER TABLE agent_availability ADD COLUMN video_ok INTEGER NOT NULL DEFAULT 0`)
+		_, _ = d.Exec(`UPDATE agent_availability SET chat_ok = 1, audio_ok = 1, video_ok = has_camera`)
 	}
 	return d, nil
 }
@@ -454,6 +510,9 @@ type ClientMsg struct {
 	Payload json.RawMessage        `json:"payload,omitempty"`
 	Key     string                 `json:"key,omitempty"`
 	State   map[string]interface{} `json:"state,omitempty"`
+	// Token authorises a conversation channel. Presented with {"action":"auth"}
+	// before subscribing; see canUseChannel.
+	Token string `json:"token,omitempty"`
 }
 
 type ServerMsg struct {
@@ -472,6 +531,55 @@ type Conn struct {
 	// presence entries owned by this conn: channel -> key
 	tracked map[string]string
 	mu      sync.Mutex
+
+	// ---- authorization state, set at handshake or by an "auth" message ----
+
+	// agentRef is the tenant this connection is a signed-in agent of. Empty for
+	// a guest. Set once, from the session cookie on the handshake, and never
+	// from anything the client sends.
+	agentRef string
+	// grants is the set of conversation channels this connection has presented
+	// a valid capability token for.
+	grants map[string]bool
+}
+
+// grant records that this connection may use a conversation channel.
+func (c *Conn) grant(channel string) {
+	c.mu.Lock()
+	if c.grants == nil {
+		c.grants = make(map[string]bool)
+	}
+	c.grants[channel] = true
+	c.mu.Unlock()
+}
+
+// canUseChannel is the single authorization decision for the WebSocket, applied
+// to subscribe, broadcast and track alike.
+//
+// A POSITIVE whitelist by namespace. Anything unrecognised is refused, so a new
+// channel namespace cannot be introduced without deciding who may use it —
+// which is precisely the failure this replaces, where every channel was open to
+// everyone and a later feature published the ids.
+func (c *Conn) canUseChannel(channel string) bool {
+	switch {
+	case strings.HasPrefix(channel, "conv:"):
+		// Private two-party traffic. Requires a capability token for THIS
+		// conversation; knowing the id is not enough, and the id is not
+		// published anywhere in the first place.
+		c.mu.Lock()
+		ok := c.grants[channel]
+		c.mu.Unlock()
+		return ok
+
+	case strings.HasPrefix(channel, "presence:"), strings.HasPrefix(channel, "dashboard:"):
+		// Agent-only, and only for their OWN tenant. Guests used to be able to
+		// read presence:<ref> — ref is the tenant's domain, so the whole agent
+		// roster was readable by anyone who could guess it.
+		return c.agentRef != "" && channel[strings.Index(channel, ":")+1:] == c.agentRef
+
+	default:
+		return false
+	}
 }
 
 type Hub struct {
@@ -702,6 +810,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		send:    make(chan ServerMsg, 64),
 		subs:    make(map[string]bool),
 		tracked: make(map[string]string),
+		grants:  make(map[string]bool),
+	}
+	if authed {
+		// Derived from the session cookie on the handshake — never from a
+		// client-supplied field, which is the whole point.
+		c.agentRef = authRef
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -743,17 +857,53 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch msg.Action {
+		case "auth":
+			// Present a capability token to unlock its conversation channel.
+			// The channel is taken from the TOKEN, never from msg.Channel — a
+			// client naming a channel it has no token for must not be able to
+			// talk its way in.
+			t, err := parseConvToken(convSecret, msg.Token)
+			if err != nil {
+				select {
+				case c.send <- ServerMsg{Type: "error", Action: "auth"}:
+				default:
+				}
+				continue
+			}
+			ch := convChannel(t.CID)
+			c.grant(ch)
+			select {
+			case c.send <- ServerMsg{Type: "ack", Action: "auth", Channel: ch}:
+			default:
+			}
 		case "subscribe":
+			if !c.canUseChannel(msg.Channel) {
+				select {
+				case c.send <- ServerMsg{Type: "error", Action: "subscribe", Channel: msg.Channel}:
+				default:
+				}
+				continue
+			}
 			hub.subscribe(c, msg.Channel)
 			select {
 			case c.send <- ServerMsg{Type: "ack", Action: "subscribe", Channel: msg.Channel}:
 			default:
 			}
 		case "unsubscribe":
+			// Always allowed: leaving a channel can harm nobody.
 			hub.unsubscribe(c, msg.Channel)
 		case "broadcast":
+			// Same gate as subscribe. Injecting into a conversation (a forged
+			// incoming call, a forged message, forged WebRTC signalling) is at
+			// least as damaging as reading it.
+			if !c.canUseChannel(msg.Channel) {
+				continue
+			}
 			hub.broadcast(msg.Channel, msg.Event, msg.Payload)
 		case "track":
+			if !c.canUseChannel(msg.Channel) {
+				continue
+			}
 			hub.track(c, msg.Channel, msg.Key, msg.State)
 		case "untrack":
 			c.mu.Lock()

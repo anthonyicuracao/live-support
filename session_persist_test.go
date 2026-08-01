@@ -174,7 +174,7 @@ func TestRevocationEndsPermanentSessions(t *testing.T) {
 		_, db := newServer(t)
 		uid := mustUser(t, db, "available-agent")
 		_, _, _ = createAuthSession(db, uid, 0)
-		if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", ""); err != nil {
+		if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", "", modes{Chat: true, Audio: true}); err != nil {
 			t.Fatalf("upsertAvailability: %v", err)
 		}
 		if !userIsAvailable(db, uid) {
@@ -192,7 +192,7 @@ func TestRevocationEndsPermanentSessions(t *testing.T) {
 func TestUserIsAvailableRequiresActiveUser(t *testing.T) {
 	_, db := newServer(t)
 	uid := mustUser(t, db, "deactivated-but-available")
-	if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", ""); err != nil {
+	if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", "", modes{Chat: true, Audio: true}); err != nil {
 		t.Fatalf("upsertAvailability: %v", err)
 	}
 	if !userIsAvailable(db, uid) {

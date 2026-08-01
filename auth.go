@@ -929,6 +929,10 @@ func newAuthApp() (*authApp, error) {
 		corsOrigins:    splitCommaList(os.Getenv("CORS_ORIGINS")),
 		throttle:       newLoginThrottle(),
 	}
+	// The WebSocket hub verifies conversation capability tokens and has no
+	// authApp to reach through, so the key is published once here rather than
+	// threaded through every call site.
+	convSecret = a.ssoSecret
 	go a.sweepLoop()
 	return a, nil
 }
@@ -994,6 +998,12 @@ func (a *authApp) bootstrapTenant(db *sql.DB, ref string) {
 
 // Mount registers all auth/user-management routes onto mux.
 func (a *authApp) Mount(mux *http.ServeMux) {
+	// Conversation capability endpoints belong to the auth app (they mint and
+	// verify tokens with its secret), so they mount here rather than at the
+	// server's own call site — one place registers them, and the test harness
+	// gets them for free.
+	a.mountConversations(mux)
+
 	// public (pre-session)
 	mux.HandleFunc("GET /login", a.loginForm)
 	mux.HandleFunc("POST /login", a.login)

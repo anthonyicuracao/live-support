@@ -36,7 +36,7 @@ func TestAgentDiscovery(t *testing.T) {
 	}
 
 	// Available but NO push subscription → unreachable → hidden.
-	if err := upsertAvailability(db, testRef, uid, true, "sess-2", "Reachable Agent", true, "", "2026-01-01T00:00:00Z"); err != nil {
+	if err := upsertAvailability(db, testRef, uid, true, "sess-2", "Reachable Agent", true, "", "2026-01-01T00:00:00Z", modes{Chat: true, Audio: true, Video: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := list(); len(got) != 0 {
@@ -51,8 +51,19 @@ func TestAgentDiscovery(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 discoverable agent, got %d", len(got))
 	}
-	if got[0]["session_id"] != "sess-2" || got[0]["name"] != "Reachable Agent" || got[0]["has_camera"] != true {
+	if got[0]["name"] != "Reachable Agent" || got[0]["has_camera"] != true {
 		t.Fatalf("unexpected agent record: %v", got[0])
+	}
+	// This assertion used to require session_id == "sess-2". Publishing it was
+	// the vulnerability: session_id keys the agent's inbox channel, so the
+	// public roster was handing out the ability to read and inject their
+	// traffic. Guests now address an agent by user_id and get a random,
+	// token-gated conversation id instead.
+	if _, leaked := got[0]["session_id"]; leaked {
+		t.Fatalf("public roster exposes session_id again: %v", got[0])
+	}
+	if got[0]["user_id"] == nil {
+		t.Fatalf("roster must still carry user_id so a guest can request a conversation: %v", got[0])
 	}
 
 	// Pause hides them again.

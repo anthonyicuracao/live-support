@@ -116,7 +116,7 @@ func TestCallRingFlow(t *testing.T) {
 	}
 
 	// Agent goes Available → ring pushes.
-	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", ""); err != nil {
+	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", "", modes{Chat: true, Audio: true}); err != nil {
 		t.Fatal(err)
 	}
 	if got := ring(); got != 1 {
@@ -136,7 +136,7 @@ func TestCallRingFlow(t *testing.T) {
 	if got := ring(); got != 0 {
 		t.Fatalf("ring after Pause should push 0, got %d", got)
 	}
-	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", ""); err != nil {
+	if err := upsertAvailability(db, testRef, uid, true, "agent-sess", "Agent One", false, "", "", modes{Chat: true, Audio: true}); err != nil {
 		t.Fatal(err)
 	}
 

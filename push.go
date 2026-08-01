@@ -356,16 +356,25 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
 		return
 	}
+	// Normalize BEFORE the gate, so the modality check tests the same value the
+	// rest of the path will use. A positive whitelist: anything unrecognised
+	// becomes audio rather than being passed through, and an unknown type can
+	// therefore never slip past modes.allows().
+	callType := body.CallType
+	switch callType {
+	case callTypeChat, callTypeAudio, callTypeVideo:
+	default:
+		callType = callTypeAudio
+	}
 	// Durable-availability gate: a Paused or logged-out agent must never be
-	// rung, even when a guest holds a stale roster naming their session.
-	if !userIsAvailable(db, userID) {
-		log.Printf("[Ring] dropped: user %d not available", userID)
+	// rung, even when a guest holds a stale roster naming their session — and
+	// nor may one be rung for a modality they have turned off. A stale roster
+	// is the normal case, not an edge case, so this is the only place that can
+	// enforce it.
+	if !userTakesCallType(db, userID, callType) {
+		log.Printf("[Ring] dropped: user %d not available for %s", userID, callType)
 		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
 		return
-	}
-	callType := body.CallType
-	if callType != "video" {
-		callType = "audio"
 	}
 	callerName := body.CallerName
 	if callerName == "" {
