@@ -365,6 +365,39 @@ async function textsOf(page, selector) {
       `notify() resolved to ${fallback}`
     );
 
+    // Mute is the agent-facing control for all of this. It has to survive a
+    // reload — an agent who silenced the console before a meeting should not
+    // have it shout again because they refreshed a tab.
+    await agent.evaluate(() => window.Shared.setNoticeMuted(true));
+    await agent.reload({ waitUntil: "domcontentloaded" });
+    await agent.waitForTimeout(400);
+    const stillMuted = await agent.evaluate(() => window.Shared.noticeMuted());
+    check("mute survives a reload", stillMuted === true, `noticeMuted() = ${stillMuted}`);
+
+    const mutedBell = await agent.evaluate(() => {
+      const b = document.querySelector("[data-mute-toggle]");
+      return b ? b.getAttribute("aria-pressed") : "no button";
+    });
+    check(
+      "the console shows a mute control reflecting the stored state",
+      mutedBell === "true",
+      `aria-pressed = ${mutedBell}`
+    );
+
+    // Muted means SILENT, not unmonitored: no sound even with audio unlocked,
+    // but the alert must still land somewhere visible.
+    await agent.mouse.click(5, 5);
+    await agent.waitForTimeout(300);
+    const mutedPlay = await agent.evaluate(() => window.Shared.playNotice());
+    check("muted plays nothing even once audio is unlocked", mutedPlay === false, `playNotice() = ${mutedPlay}`);
+    const mutedRoute = await agent.evaluate(() => window.Shared.notify({ title: "t", body: "b" }));
+    check(
+      "a muted console still routes the alert somewhere visible",
+      mutedRoute === "notification" || mutedRoute === "badge",
+      `notify() resolved to ${mutedRoute}`
+    );
+    await agent.evaluate(() => window.Shared.setNoticeMuted(false));
+
     // A deliberately-offline page logs network failures; those are the test
     // doing its job, not a defect. Everything else must still be clean —
     // filtered narrowly rather than relaxing the check, so a real error during

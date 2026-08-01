@@ -924,3 +924,18 @@ button,
   opacity: 0.6;
   font-size: 0.85rem;
 }
+
+
+/* Notification mute. Shared by both surfaces, so nothing positional here —
+   the console places it in the greeting head, the guest in its dock bar. */
+.notice-mute {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.25rem;
+  opacity: 0.75;
+}
+.notice-mute:hover { opacity: 1; }
+.notice-mute[aria-pressed="true"] { opacity: 0.5; }

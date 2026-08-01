@@ -606,13 +606,42 @@ window.Shared = (() => {
   // So the context is created and resumed on the agent's FIRST interaction with
   // the console, whatever it is, and is already running when a message lands.
   let noticeCtx = null;
+  // Sticky: has this page ever had a real user gesture? Once true it stays
+  // true, because that is precisely how the platform treats activation, and it
+  // is what licenses resume() outside a handler further down.
+  let hasActivated = false;
   function unlockNotice() {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
+      hasActivated = true;
       noticeCtx = noticeCtx || new Ctx();
-      if (noticeCtx.state === "suspended") noticeCtx.resume();
+      if (noticeCtx.state !== "running") noticeCtx.resume();
+      // Safari wants the context to actually PRODUCE something inside the
+      // gesture, not merely be resumed in one. Resuming alone leaves it in a
+      // state that reports "running" and stays inaudible, which is the whole
+      // reason Ron heard nothing on macOS Safari while Android chimed. A
+      // one-frame silent buffer satisfies it and is inaudible by construction.
+      const buf = noticeCtx.createBuffer(1, 1, noticeCtx.sampleRate);
+      const src = noticeCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(noticeCtx.destination);
+      src.start(0);
     } catch (e) { /* no audio on this browser; the unread badge still shows */ }
+  }
+
+  // Safari also suspends the context on its own — when the tab is backgrounded,
+  // and via a WebKit-only "interrupted" state when another app takes audio
+  // focus. Neither involves us, and neither raises an event we can act on at
+  // send time, so the context is nudged back whenever the page is looked at.
+  // Without this a console left open all morning is silently mute by lunch.
+  if (typeof document !== "undefined") {
+    const rewake = () => {
+      if (!hasActivated || !noticeCtx) return;
+      if (noticeCtx.state !== "running") noticeCtx.resume().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", rewake);
+    window.addEventListener("focus", rewake);
   }
   // `once` is deliberate on pointerdown/keydown but the listeners are cheap and
   // idempotent, so re-arming costs nothing if the first one fires before the
@@ -631,7 +660,7 @@ window.Shared = (() => {
     return noticeCtx.state;
   }
 
-  function playNotice() {
+  async function playNotice() {
     try {
       // Deliberately does NOT create the context. Construction belongs to the
       // gesture handler, because an AudioContext built outside one may come up
@@ -639,6 +668,7 @@ window.Shared = (() => {
       // message manufacture its own permission and make the one sound the
       // policy exists to prevent: unannounced noise on a page nobody touched.
       if (!noticeCtx) return false;
+      if (noticeMuted()) return false;
       // NEVER schedule on a context that is not already running.
       //
       // resume() is asynchronous, so the old code called it and then scheduled
@@ -649,7 +679,17 @@ window.Shared = (() => {
       //
       // Unlocking belongs to the gesture handler. Here we only ever play when
       // we already can.
-      if (noticeCtx.state !== "running") return false;
+      if (noticeCtx.state !== "running") {
+        // Never scheduled onto a context that is not running — that is the
+        // queue bug. But declining outright was too blunt: Safari parks a
+        // perfectly well-earned context in "suspended"/"interrupted" on its
+        // own, and refusing there means an agent who did everything right
+        // gets silence. With a prior gesture on record we may resume, and we
+        // schedule only after the state is confirmed, never on the promise.
+        if (!hasActivated) return false;
+        try { await noticeCtx.resume(); } catch (e) { return false; }
+        if (noticeCtx.state !== "running") return false;
+      }
       const now = noticeCtx.currentTime + 0.01;
       const osc = noticeCtx.createOscillator();
       const gain = noticeCtx.createGain();
@@ -666,6 +706,49 @@ window.Shared = (() => {
     } catch (e) {
       return false; // no audio available; the unread badge still tells the story
     }
+  }
+
+  // Mute is a first-class control rather than a preference buried somewhere:
+  // an agent on a call, or in a room with other people, needs to silence the
+  // console in one click and have it stay silenced across reloads. Muting
+  // suppresses SOUND only — the badge and the unread counts still do their job,
+  // because a muted console must not become an unmonitored one.
+  const MUTE_KEY = "ls_notice_muted";
+  function noticeMuted() {
+    try { return localStorage.getItem(MUTE_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setNoticeMuted(on) {
+    try { localStorage.setItem(MUTE_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
+    document.querySelectorAll("[data-mute-toggle]").forEach(paintMuteButton);
+    return on;
+  }
+  function paintMuteButton(btn) {
+    const muted = noticeMuted();
+    btn.textContent = muted ? "🔇" : "🔔";
+    btn.setAttribute("aria-pressed", muted ? "true" : "false");
+    btn.setAttribute("aria-label", muted ? "Unmute notification sound" : "Mute notification sound");
+    btn.title = muted ? "Notification sound off" : "Notification sound on";
+  }
+  // Wires every [data-mute-toggle] on the page. Clicking one is itself a
+  // gesture, so unmuting also unlocks audio — the agent who reaches for the
+  // bell because they heard nothing gets sound from that click onward.
+  function wireMuteToggles() {
+    document.querySelectorAll("[data-mute-toggle]").forEach((btn) => {
+      if (btn.dataset.muteWired) return;
+      btn.dataset.muteWired = "1";
+      paintMuteButton(btn);
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation(); // dock bars use the header as a collapse target
+        setNoticeMuted(!noticeMuted());
+        if (!noticeMuted()) playNotice(); // confirm audibly that it is back
+      });
+    });
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", wireMuteToggles);
+    } else { wireMuteToggles(); }
   }
 
   // notify: the full attention chain, strongest signal the page is allowed to
@@ -687,14 +770,15 @@ window.Shared = (() => {
     // Focused and unlocked: a quiet in-page blip is the least intrusive thing
     // that works. An OS notification for a tab you are already looking at is
     // noise.
-    if (focused && playNotice()) return "audio";
+    if (focused && (await playNotice())) return "audio";
 
     // Not focused, or audio is locked. A system notification carries its own
     // sound and sidesteps the policy entirely.
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      const silent = noticeMuted();
       try {
         const reg = await navigator.serviceWorker?.getRegistration();
-        const opts = { body, tag: tag || "chat", renotify: true, silent: false };
+        const opts = { body, tag: tag || "chat", renotify: true, silent };
         if (reg) { await reg.showNotification(title, opts); return "notification"; }
         new Notification(title, opts);
         return "notification";
@@ -902,6 +986,9 @@ window.Shared = (() => {
     noticeState,
     notify,
     clearTitleBadge,
+    noticeMuted,
+    setNoticeMuted,
+    wireMuteToggles,
     requestNotifyPermission,
     notifyIncomingCall,
     clearIncomingNotification,
