@@ -689,6 +689,10 @@ func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Req
 		errJSON(w, 403, "forbidden")
 		return
 	}
+	// Enforced on the way OUT as well as on the way in. If the setting were
+	// only checked at write time, a tenant turning it off would still leak
+	// every read timestamp recorded while it was on.
+	showRead := readReceiptsEnabled(db)
 	rows, err := db.Query(
 		`SELECT id, sender, body, created_at, delivered_at, read_at
 		   FROM chat_messages WHERE cid = ? ORDER BY id`, q.Get("cid"))
@@ -703,9 +707,13 @@ func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Req
 		var delivered, read sql.NullInt64
 		var sender, msgBody string
 		if err := rows.Scan(&id, &sender, &msgBody, &created, &delivered, &read); err == nil {
+			readAt := read.Int64
+			if !showRead {
+				readAt = 0
+			}
 			out = append(out, map[string]any{
 				"id": id, "sender": sender, "body": msgBody, "created_at": created,
-				"delivered_at": delivered.Int64, "read_at": read.Int64,
+				"delivered_at": delivered.Int64, "read_at": readAt,
 			})
 		}
 	}
@@ -925,6 +933,13 @@ func (a *authApp) conversationReceiptHandler(w http.ResponseWriter, r *http.Requ
 	case "delivered":
 		col = "delivered_at"
 	case "read":
+		if !readReceiptsEnabled(db) {
+			// Accepted and ignored, not refused: the sender's client is doing
+			// the right thing, and turning this into an error would put a
+			// tenant's privacy choice in their browser console.
+			writeJSON(w, 200, map[string]any{"ok": true, "recorded": false})
+			return
+		}
 		col = "read_at"
 	default:
 		errJSON(w, 400, "unknown receipt kind")

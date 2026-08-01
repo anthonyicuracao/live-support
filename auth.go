@@ -1030,6 +1030,7 @@ func (a *authApp) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /users/reset", a.adminCSRF(a.resetUser))
 	mux.Handle("POST /users/delete", a.adminCSRF(a.deleteUser))
 	mux.Handle("POST /users/signout", a.adminCSRF(a.signOutUser))
+	mux.Handle("POST /settings/read-receipts", a.adminCSRF(a.setReadReceipts))
 }
 
 // ---- request context ----
@@ -1768,10 +1769,11 @@ func (a *authApp) reset(w http.ResponseWriter, r *http.Request) {
 
 type usersView struct {
 	base
-	Users      []User
-	InviteLink string
-	ResetLink  string
-	Error      string
+	ReadReceipts bool
+	Users        []User
+	InviteLink   string
+	ResetLink    string
+	Error        string
 }
 
 func (a *authApp) usersPage(w http.ResponseWriter, r *http.Request) {
@@ -1797,6 +1799,7 @@ func (a *authApp) renderUsersView(w http.ResponseWriter, r *http.Request, v user
 	v.base = a.newBase(r)
 	v.base.Wide = true
 	v.Users = users
+	v.ReadReceipts = readReceiptsEnabled(info.db)
 	a.render(w, http.StatusOK, "users.tmpl", v)
 }
 

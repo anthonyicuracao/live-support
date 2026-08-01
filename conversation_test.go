@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -611,4 +612,120 @@ func TestTenantWithPreExistingDuplicatesStillOpens(t *testing.T) {
 	if total != 3 {
 		t.Errorf("%d conversations remain, want 3 — reconciliation must CLOSE, never delete", total)
 	}
+}
+
+// Read receipts are a per-tenant privacy setting. Default ON (Ron: live support
+// is the primary use case and the visitor is the one waiting), and when a tenant
+// turns them off it must hold on BOTH paths — refusing to record new ones is not
+// enough if the transcript still hands back every timestamp taken while it was on.
+func TestReadReceiptsAreAPerTenantSetting(t *testing.T) {
+	srv, db := newServer(t)
+	c := newClient(t)
+
+	uid := mustUser(t, db, "receipt-agent")
+	if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", "",
+		modes{Chat: true}); err != nil {
+		t.Fatalf("upsertAvailability: %v", err)
+	}
+
+	if !readReceiptsEnabled(db) {
+		t.Fatal("read receipts must default to ON — transparency is the documented default")
+	}
+
+	// A conversation with one visitor message for the agent to acknowledge.
+	_, startBody := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
+		"ref": testRef, "callType": callTypeChat,
+		"guestSession": "visitor-r", "guestName": "V",
+	})
+	var started map[string]any
+	if err := json.Unmarshal([]byte(startBody), &started); err != nil {
+		t.Fatalf("decode start: %v (%s)", err, startBody)
+	}
+	cid, _ := started["cid"].(string)
+	guestTok, _ := started["token"].(string)
+	agentTok, err := mintConvToken(convTestSecret, cid, convRoleAgent)
+	if err != nil {
+		t.Fatalf("mint agent token: %v", err)
+	}
+
+	_, msgBody := postJSON(t, c, srv.URL+"/api/conversation/message", map[string]any{
+		"ref": testRef, "cid": cid, "token": guestTok, "body": "hello",
+	})
+	var sent struct {
+		Message struct{ ID int64 } `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(msgBody), &sent); err != nil || sent.Message.ID == 0 {
+		t.Fatalf("decode message: %v (%s)", err, msgBody)
+	}
+
+	ack := func(kind string) {
+		postJSON(t, c, srv.URL+"/api/conversation/receipt", map[string]any{
+			"ref": testRef, "cid": cid, "token": agentTok,
+			"upToId": sent.Message.ID, "kind": kind,
+		})
+	}
+	transcriptReadAt := func(tok string) float64 {
+		qs := "ref=" + testRef + "&cid=" + cid + "&token=" + url.QueryEscape(tok)
+		_, body := getBody(t, c, srv.URL+"/api/conversation/messages?"+qs)
+		var out struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		_ = json.Unmarshal([]byte(body), &out)
+		if len(out.Messages) == 0 {
+			t.Fatalf("no messages in transcript: %s", body)
+		}
+		v, _ := out.Messages[0]["read_at"].(float64)
+		return v
+	}
+
+	t.Run("on by default: a read is recorded and visible", func(t *testing.T) {
+		ack("read")
+		if transcriptReadAt(guestTok) == 0 {
+			t.Error("read receipt was not recorded while the setting is on")
+		}
+	})
+
+	t.Run("turning it off hides receipts already taken", func(t *testing.T) {
+		if err := setTenantSetting(db, settingReadReceipts, "off"); err != nil {
+			t.Fatalf("set: %v", err)
+		}
+		if transcriptReadAt(guestTok) != 0 {
+			t.Error("a read time recorded earlier is still exposed after opting out")
+		}
+	})
+
+	t.Run("and stops new ones being recorded", func(t *testing.T) {
+		// Wipe the stored value so a fresh ack would have to write it again.
+		if _, err := db.Exec(`UPDATE chat_messages SET read_at = NULL WHERE cid = ?`, cid); err != nil {
+			t.Fatalf("clear: %v", err)
+		}
+		ack("read")
+		var stored sql.NullInt64
+		if err := db.QueryRow(`SELECT read_at FROM chat_messages WHERE cid = ?`, cid).Scan(&stored); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if stored.Valid {
+			t.Error("a read receipt was recorded while the tenant has them off")
+		}
+	})
+
+	t.Run("delivery is unaffected — it is not the same claim", func(t *testing.T) {
+		ack("delivered")
+		var delivered sql.NullInt64
+		if err := db.QueryRow(`SELECT delivered_at FROM chat_messages WHERE cid = ?`, cid).Scan(&delivered); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if !delivered.Valid {
+			t.Error("delivery receipts must keep working — they say it reached a device, not that a person read it")
+		}
+	})
+
+	t.Run("an unexpected value falls back to ON", func(t *testing.T) {
+		// Positive check for the disabling value: a corrupted setting must not
+		// silently switch a feature off for a tenant who never asked.
+		_ = setTenantSetting(db, settingReadReceipts, "banana")
+		if !readReceiptsEnabled(db) {
+			t.Error("an unrecognised setting disabled read receipts")
+		}
+	})
 }

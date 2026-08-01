@@ -32,6 +32,25 @@
 </section>
 
 <section class="card" style="margin-top:16px">
+  <h2>Chat privacy</h2>
+  <p>
+    Read receipts tell a visitor when an agent has actually opened their message.
+    They are <strong>on by default</strong>: in live support the visitor is the one
+    waiting, and knowing they have been read is information worth having.
+    Turning them off hides the second tick from visitors and stops new read times
+    being recorded. Delivery (“reached their device”) is always shown.
+  </p>
+  <form method="POST" action="/settings/read-receipts" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="enabled" value="{{if .ReadReceipts}}false{{else}}true{{end}}">
+    <button class="btn" type="submit">
+      {{if .ReadReceipts}}Turn read receipts off{{else}}Turn read receipts on{{end}}
+    </button>
+    <span>Currently <strong>{{if .ReadReceipts}}on{{else}}off{{end}}</strong>.</span>
+  </form>
+</section>
+
+<section class="card" style="margin-top:16px">
   <table>
     <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Signed in</th><th></th></tr></thead>
     <tbody>

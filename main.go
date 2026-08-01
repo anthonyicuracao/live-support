@@ -257,6 +257,13 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_cid ON chat_messages(cid, id);
+-- Per-tenant configuration. Key/value rather than a column per flag: tenant
+-- databases are created independently and are never all on the same version,
+-- so a column each would mean a migration each.
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `
 
 func openDB(path string) (*sql.DB, error) {
