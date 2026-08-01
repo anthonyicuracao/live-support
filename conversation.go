@@ -55,12 +55,33 @@ import (
 // enough that a token lifted from a log is not a standing key.
 const convTokenTTL = 12 * time.Hour
 
-// Conversation roles. Stored in the token so the server can tell the two
-// participants apart without trusting anything the client says.
+// Token roles. Stored in the token so the server can tell participants apart
+// without trusting anything the client says. The role also decides WHICH
+// channel a token unlocks, which is why the client never names one.
 const (
 	convRoleGuest = "guest"
 	convRoleAgent = "agent"
+	// A visitor's own inbox. Unlike the two above it is not tied to a
+	// conversation: it is how an AGENT opens contact with a visitor who has no
+	// authenticated channel of their own.
+	roleGuestSession = "guestsession"
 )
+
+// guestChannel is a visitor's private inbox, keyed by a SERVER-MINTED session
+// id. Server-minted matters: agents can see a visitor's session id in presence,
+// so if the client chose it, anyone who saw it could ask for a token for it.
+// Minting id and token together means seeing the id is not enough.
+func guestChannel(sid string) string { return "guest:" + sid }
+
+// channelForToken maps a verified token to the one channel it unlocks. The
+// client never supplies a channel name — this is the whole reason naming a
+// channel you hold no token for cannot talk you into it.
+func channelForToken(t convToken) string {
+	if t.Role == roleGuestSession {
+		return guestChannel(t.CID)
+	}
+	return convChannel(t.CID)
+}
 
 var errBadConvToken = errors.New("invalid conversation token")
 
@@ -126,7 +147,12 @@ func parseConvToken(secret, tok string) (convToken, error) {
 	if err := json.Unmarshal([]byte(pt), &t); err != nil {
 		return t, errBadConvToken
 	}
-	if t.CID == "" || (t.Role != convRoleGuest && t.Role != convRoleAgent) {
+	switch t.Role {
+	case convRoleGuest, convRoleAgent, roleGuestSession:
+	default:
+		return t, errBadConvToken
+	}
+	if t.CID == "" {
 		return t, errBadConvToken
 	}
 	if t.Exp != 0 && time.Now().Unix() > t.Exp {
@@ -431,7 +457,123 @@ func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Req
 	writeJSON(w, 200, map[string]any{"messages": out})
 }
 
+// POST /api/guest/session (public, ref-controlled): mint a visitor's session id
+// AND the capability for their private inbox, together.
+//
+// The server mints the id rather than accepting one, because an agent can see a
+// visitor's session id in presence. If the client chose it, anyone who saw it
+// could request a token for it and read that visitor's invitations. Minting
+// both at once means seeing the id is not enough to obtain the capability.
+func (a *authApp) guestSessionHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	var body struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	if body.Ref == "" || !dbs.exists(body.Ref) {
+		errJSON(w, 404, "unknown tenant")
+		return
+	}
+	sid, err := newConvID()
+	if err != nil {
+		errJSON(w, 500, "internal error")
+		return
+	}
+	tok, err := mintConvToken(a.ssoSecret, sid, roleGuestSession)
+	if err != nil {
+		errJSON(w, 500, "internal error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"sessionId": sid,
+		"token":     tok,
+		"channel":   guestChannel(sid),
+	})
+}
+
+// POST /api/conversation/invite (authed): an AGENT opens contact with a
+// visitor they can see in the console's waiting list.
+//
+// The invitation — including the visitor's capability for the new conversation
+// — is delivered BY THE SERVER to that visitor's private inbox. The agent never
+// holds a grant for someone else's inbox, and so cannot write into it directly:
+// if they could, so could anyone else who learned a session id.
+func (a *authApp) conversationInviteHandler(w http.ResponseWriter, r *http.Request) {
+	info := authFrom(r.Context())
+	if info == nil {
+		errJSON(w, 401, "not signed in")
+		return
+	}
+	var body struct {
+		GuestSession string `json:"guestSession"`
+		GuestName    string `json:"guestName"`
+		CallType     string `json:"callType"`
+		CallerName   string `json:"callerName"`
+		CallID       string `json:"callId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	if body.GuestSession == "" {
+		errJSON(w, 400, "missing fields")
+		return
+	}
+	switch body.CallType {
+	case callTypeChat, callTypeAudio, callTypeVideo:
+	default:
+		errJSON(w, 400, "unknown call type")
+		return
+	}
+
+	cid, err := newConvID()
+	if err != nil {
+		errJSON(w, 500, "internal error")
+		return
+	}
+	if err := createConversation(info.db, conversation{
+		CID: cid, Ref: info.ref, GuestSession: body.GuestSession,
+		GuestName: strings.TrimSpace(body.GuestName), AgentUserID: info.user.ID,
+		CallType: body.CallType, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		errJSON(w, 500, "store failed")
+		return
+	}
+	agentTok, err := mintConvToken(a.ssoSecret, cid, convRoleAgent)
+	if err != nil {
+		errJSON(w, 500, "internal error")
+		return
+	}
+	guestTok, err := mintConvToken(a.ssoSecret, cid, convRoleGuest)
+	if err != nil {
+		errJSON(w, 500, "internal error")
+		return
+	}
+	callID := body.CallID
+	if callID == "" {
+		callID = cid
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type":       "incoming-call",
+		"cid":        cid,
+		"token":      guestTok, // the visitor's capability for THIS conversation
+		"callId":     callID,
+		"callType":   body.CallType,
+		"callerName": body.CallerName,
+	})
+	hub.broadcast(guestChannel(body.GuestSession), "message", payload)
+
+	writeJSON(w, 200, map[string]any{
+		"cid": cid, "token": agentTok, "channel": convChannel(cid), "callId": callID,
+	})
+}
+
 func (a *authApp) mountConversations(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/guest/session", a.guestSessionHandler)
+	mux.Handle("POST /api/conversation/invite", a.authedJSON(a.conversationInviteHandler))
 	mux.HandleFunc("POST /api/conversation/start", a.conversationStartHandler)
 	mux.Handle("GET /api/conversation/token", a.authedJSON(a.conversationTokenHandler))
 	mux.HandleFunc("POST /api/conversation/end", a.conversationEndHandler)

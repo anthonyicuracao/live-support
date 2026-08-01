@@ -538,6 +538,9 @@ type Conn struct {
 	// a guest. Set once, from the session cookie on the handshake, and never
 	// from anything the client sends.
 	agentRef string
+	// agentUserID is the signed-in agent's user id, from the same handshake
+	// session as agentRef. Used to bind the user-keyed ring inbox to its owner.
+	agentUserID int64
 	// grants is the set of conversation channels this connection has presented
 	// a valid capability token for.
 	grants map[string]bool
@@ -553,29 +556,58 @@ func (c *Conn) grant(channel string) {
 	c.mu.Unlock()
 }
 
-// canUseChannel is the single authorization decision for the WebSocket, applied
-// to subscribe, broadcast and track alike.
+// canUseChannel is the single authorization decision for the WebSocket.
 //
 // A POSITIVE whitelist by namespace. Anything unrecognised is refused, so a new
 // channel namespace cannot be introduced without deciding who may use it —
 // which is precisely the failure this replaces, where every channel was open to
 // everyone and a later feature published the ids.
-func (c *Conn) canUseChannel(channel string) bool {
-	switch {
-	case strings.HasPrefix(channel, "conv:"):
-		// Private two-party traffic. Requires a capability token for THIS
-		// conversation; knowing the id is not enough, and the id is not
-		// published anywhere in the first place.
+//
+// It is ACTION-aware because presence is genuinely asymmetric: it is a
+// directory that everyone writes and only agents read. A guest must be able to
+// announce itself (or the console would show no waiting visitors at all), but
+// must not be able to read the roster back — reading it was the leak.
+func (c *Conn) canUseChannel(action, channel string) bool {
+	granted := func() bool {
 		c.mu.Lock()
-		ok := c.grants[channel]
-		c.mu.Unlock()
-		return ok
+		defer c.mu.Unlock()
+		return c.grants[channel]
+	}
+	ownTenant := func() bool {
+		i := strings.Index(channel, ":")
+		return c.agentRef != "" && i >= 0 && channel[i+1:] == c.agentRef
+	}
 
-	case strings.HasPrefix(channel, "presence:"), strings.HasPrefix(channel, "dashboard:"):
-		// Agent-only, and only for their OWN tenant. Guests used to be able to
-		// read presence:<ref> — ref is the tenant's domain, so the whole agent
-		// roster was readable by anyone who could guess it.
-		return c.agentRef != "" && channel[strings.Index(channel, ":")+1:] == c.agentRef
+	switch {
+	case strings.HasPrefix(channel, "conv:"), strings.HasPrefix(channel, "guest:"):
+		// Private traffic. Requires a capability token for THIS channel;
+		// knowing the id is not enough, and no id is published in the first
+		// place. guest:<sid> is how an AGENT opens contact with a visitor, who
+		// has no authenticated channel of their own.
+		return granted()
+
+	case strings.HasPrefix(channel, "presence:"):
+		if action == "track" || action == "untrack" {
+			// Write-only for everyone: a guest announcing itself. One entry per
+			// connection (Conn.tracked is keyed by channel), so this cannot be
+			// used to flood the roster.
+			return true
+		}
+		return ownTenant()
+
+	case strings.HasPrefix(channel, "dashboard:"):
+		return ownTenant()
+
+	case strings.HasPrefix(channel, "inbox:user:"):
+		// The ring fan-out target: the server broadcasts an incoming call to
+		// every live console of one agent. Readable ONLY by that agent, on
+		// their own tenant — identity comes from the handshake session, so a
+		// client cannot name someone else's inbox and listen to their calls.
+		//
+		// The per-SESSION inbox:<id> channels this replaced are gone entirely:
+		// their names were published, which is what let a passer-by listen.
+		return c.agentRef != "" && c.agentUserID != 0 &&
+			channel == fmt.Sprintf("inbox:user:%s:%d", c.agentRef, c.agentUserID)
 
 	default:
 		return false
@@ -773,23 +805,24 @@ const wsSessionCheckEvery = 60 * time.Second
 //
 // A guest has no cookie and gets ok=false — guests are unauthenticated by
 // design and this must not change that.
-func wsSessionToken(r *http.Request) (ref, raw string, ok bool) {
+func wsSessionToken(r *http.Request) (ref, raw string, userID int64, ok bool) {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
-		return "", "", false
+		return "", "", 0, false
 	}
 	ref, raw, ok = decodeSessionCookie(c.Value)
 	if !ok {
-		return "", "", false
+		return "", "", 0, false
 	}
 	db, err := dbs.get(ref)
 	if err != nil {
-		return "", "", false
+		return "", "", 0, false
 	}
-	if _, _, err := lookupAuthSession(db, raw); err != nil {
-		return "", "", false
+	_, u, err := lookupAuthSession(db, raw)
+	if err != nil {
+		return "", "", 0, false
 	}
-	return ref, raw, true
+	return ref, raw, u.ID, true
 }
 
 // watchWSSession closes an agent's socket once their session stops resolving.
@@ -824,7 +857,7 @@ func watchWSSession(ctx context.Context, cancel context.CancelFunc, ref, raw str
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	// Resolved BEFORE the upgrade, while it is still an ordinary request.
-	authRef, authRaw, authed := wsSessionToken(r)
+	authRef, authRaw, authUserID, authed := wsSessionToken(r)
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Same-origin app; allow any origin so it also works behind proxies.
@@ -844,6 +877,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		// Derived from the session cookie on the handshake — never from a
 		// client-supplied field, which is the whole point.
 		c.agentRef = authRef
+		c.agentUserID = authUserID
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -898,14 +932,14 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
-			ch := convChannel(t.CID)
+			ch := channelForToken(t)
 			c.grant(ch)
 			select {
 			case c.send <- ServerMsg{Type: "ack", Action: "auth", Channel: ch}:
 			default:
 			}
 		case "subscribe":
-			if !c.canUseChannel(msg.Channel) {
+			if !c.canUseChannel(msg.Action, msg.Channel) {
 				select {
 				case c.send <- ServerMsg{Type: "error", Action: "subscribe", Channel: msg.Channel}:
 				default:
@@ -924,12 +958,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			// Same gate as subscribe. Injecting into a conversation (a forged
 			// incoming call, a forged message, forged WebRTC signalling) is at
 			// least as damaging as reading it.
-			if !c.canUseChannel(msg.Channel) {
+			if !c.canUseChannel(msg.Action, msg.Channel) {
 				continue
 			}
 			hub.broadcast(msg.Channel, msg.Event, msg.Payload)
 		case "track":
-			if !c.canUseChannel(msg.Channel) {
+			if !c.canUseChannel(msg.Action, msg.Channel) {
 				continue
 			}
 			hub.track(c, msg.Channel, msg.Key, msg.State)

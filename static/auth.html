@@ -119,6 +119,21 @@
         <div class="settings-panel" id="settings-panel" style="display: none">
         <!-- Mode picker: choose video BEFORE going available; camera/mic are
              requested only at Go-Available. Disabled while Available. -->
+        <!-- Chat has no hardware precondition, so it can never be blocked by a
+             permission failure — an agent with no working mic can still take
+             chats, which the old single Available bit could not express. -->
+        <label class="video-mode">
+          <input type="checkbox" id="chat-mode-toggle" checked />
+          <span class="video-mode__label">Accept chats
+            <span class="video-mode__hint">— no microphone or camera needed</span>
+          </span>
+        </label>
+        <label class="video-mode">
+          <input type="checkbox" id="audio-mode-toggle" checked />
+          <span class="video-mode__label">Accept audio calls
+            <span class="video-mode__hint">— microphone is requested only when you go Available</span>
+          </span>
+        </label>
         <label class="video-mode">
           <input type="checkbox" id="video-mode-toggle" />
           <span class="video-mode__label">Accept video calls

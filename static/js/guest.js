@@ -53,10 +53,25 @@
   // same guest from appearing twice in the auth user's list when the page
   // is refreshed — the new presence track replaces the old one with the
   // same key instead of adding a second entry.
+  // The id and the capability for this visitor's private inbox are minted
+  // together by the server. Client-chosen ids would not do: an agent can see a
+  // visitor's session id in presence, so if the client picked it, seeing it
+  // would be enough to request its token and read that visitor's invitations.
   let sessionId = sessionStorage.getItem("guestSessionId");
-  if (!sessionId) {
-    sessionId = S.generateId();
+  let guestToken = sessionStorage.getItem("guestSessionToken");
+  if (!sessionId || !guestToken) {
+    const minted = await S.guestSession(params.ref);
+    if (!minted) {
+      appendGreetingMessage(
+        "We could not start a session. Please refresh and try again.",
+        "alert"
+      );
+      return;
+    }
+    sessionId = minted.sessionId;
+    guestToken = minted.token;
     sessionStorage.setItem("guestSessionId", sessionId);
+    sessionStorage.setItem("guestSessionToken", guestToken);
   }
   const presenceData = {
     session_id: sessionId,
@@ -130,6 +145,18 @@
   // the full agent roster — and the ability to broadcast into it. The server
   // folds live consoles into /api/agents/available instead (each row carries
   // `live`), so the guest sees exactly the same set with none of the reach.
+  // Announce this visitor so the console's waiting list shows them. Write-only:
+  // no subscribe, so the roster cannot be read back.
+  presenceChannel = S.announcePresence(params.ref, presenceData);
+
+  // This visitor's private inbox, which is how an AGENT opens contact. Gated by
+  // the capability minted with the session id above, so an agent who can see
+  // the id in presence still cannot subscribe to it.
+  inboxChannel = S.openConversation(
+    { channel: `guest:${sessionId}`, token: guestToken },
+    { onMessage: handleInboxMessage }
+  );
+
   let restAgents = [];
   function mergeAgents() {
     authUsers = restAgents;
@@ -237,8 +264,10 @@
     navigator.mediaDevices.addEventListener("devicechange", populateDevices);
   }
 
-  // ─── Inbox ─────────────────────────────────────────────────────────────
-  inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);
+  // Inbox is set up earlier, alongside the session mint, because it is now
+  // capability-gated: the token arrives with the session id and the channel
+  // cannot be opened without it. The old inbox:<sessionId> subscription that
+  // stood here needed no token at all, which is what let a passer-by listen.
 
   // ─── Cleanup on page unload ────────────────────────────────────────────
   window.addEventListener("beforeunload", () => {
@@ -595,12 +624,30 @@
         S.hideSection(".send-message");
       }
 
+      // The invitation carries THIS visitor's capability for the conversation,
+      // delivered by the server to this private inbox. Without it there is
+      // nothing to join — which is the point: an invitation is a grant, not an
+      // announcement anyone could overhear.
+      if (!data.cid || !data.token) return;
+
       state = "incoming";
       callRole = "callee";
       incomingCall = data;
       currentCallId = data.callId;
+      currentConv = { cid: data.cid, token: data.token, channel: `conv:${data.cid}` };
 
-      currentCallChannel = S.setupCallChannel(currentCallId, handleCallSignal);
+      currentCallChannel = S.openConversation(currentConv, {
+        onSignal: handleCallSignal,
+        onMessage: (m) => IM.receive(m),
+      });
+
+      // An agent opening a CHAT shows the thread rather than ringing.
+      if (data.callType === "chat") {
+        state = "ready";
+        IM.open({ cid: data.cid, token: data.token, name: data.callerName });
+        return;
+      }
+
       S.playRingtone();
 
       const callType = data.callType === "video" ? "video" : "audio";

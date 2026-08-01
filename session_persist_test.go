@@ -281,7 +281,7 @@ func TestWSSessionToken(t *testing.T) {
 
 	t.Run("guest has no session and stays unauthenticated", func(t *testing.T) {
 		r := httptest.NewRequest("GET", "/ws", nil)
-		if _, _, ok := wsSessionToken(r); ok {
+		if _, _, _, ok := wsSessionToken(r); ok {
 			t.Error("a cookieless request resolved a session")
 		}
 	})
@@ -291,12 +291,17 @@ func TestWSSessionToken(t *testing.T) {
 		raw, _, _ := createAuthSession(db, uid, 0)
 		r := httptest.NewRequest("GET", "/ws", nil)
 		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: encodeSessionCookie(testRef, raw)})
-		gotRef, gotRaw, ok := wsSessionToken(r)
+		gotRef, gotRaw, gotUID, ok := wsSessionToken(r)
 		if !ok {
 			t.Fatal("agent with a valid session did not resolve")
 		}
 		if gotRef != testRef || gotRaw != raw {
 			t.Errorf("resolved (%q, …), want (%q, …)", gotRef, testRef)
+		}
+		// The user id binds the ring inbox to its owner, so a connection cannot
+		// name a colleague's inbox and listen to their calls.
+		if gotUID != uid {
+			t.Errorf("resolved user %d, want %d", gotUID, uid)
 		}
 	})
 
@@ -305,11 +310,11 @@ func TestWSSessionToken(t *testing.T) {
 		raw, _, _ := createAuthSession(db, uid, 0)
 		r := httptest.NewRequest("GET", "/ws", nil)
 		r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: encodeSessionCookie(testRef, raw)})
-		if _, _, ok := wsSessionToken(r); !ok {
+		if _, _, _, ok := wsSessionToken(r); !ok {
 			t.Fatal("precondition: session should resolve before revocation")
 		}
 		deleteUserAuthSessions(db, uid)
-		if _, _, ok := wsSessionToken(r); ok {
+		if _, _, _, ok := wsSessionToken(r); ok {
 			t.Error("revoked session still resolves — presence would outlive it")
 		}
 	})

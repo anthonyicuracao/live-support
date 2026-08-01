@@ -361,6 +361,10 @@
           hasCamera: !!perms.hasCamera,
           picture: picture || "",
           onlineSince: presenceData.online_since,
+          // Omitted on a touch: a touch re-points the session id of an already
+          // available record and must not restate intent, or a slow in-flight
+          // touch could revive a modality the agent has just turned off.
+          modes: touchOnly ? undefined : currentModes(),
         }),
       });
       // A 401 here is the single most consequential failure in the console: it
@@ -503,6 +507,8 @@
     }
   }
   let picture = loadPicture();
+  // Filled from the server below; applied when the mode toggles are built.
+  let savedModes = null;
 
   // Restore durable availability before presence is announced, so a reopened
   // console comes back Available (Ron-rule: until Pause or log out) without
@@ -511,6 +517,11 @@
     const r = await fetch("/api/availability");
     if (r.ok) {
       const saved = await r.json();
+      // Restore the modality choices too, or a reopened console would come back
+      // Available while silently resetting what the agent had opted into.
+      // The server returns sensible defaults (chat + audio) when there is no
+      // row yet, so a first-time agent starts armed for everything but video.
+      if (saved.modes) savedModes = saved.modes;
       if (saved.available) {
         isAvailable = true;
         perms.hasCamera = !!saved.hasCamera;
@@ -552,25 +563,63 @@
   const availabilityInput = document.getElementById("availability-toggle");
   const availabilityStateEl = document.getElementById("availability-state");
   const videoModeInput = document.getElementById("video-mode-toggle");
+  const chatModeInput = document.getElementById("chat-mode-toggle");
+  const audioModeInput = document.getElementById("audio-mode-toggle");
+
+  // Per-modality intent. `isAvailable` stays the master switch ("am I
+  // working"); these say what kind of work. An agent with a camera who is only
+  // taking chat right now is a state the old single bit could not express.
+  let modes = savedModes || { chat: true, audio: true, video: false };
+
+  function currentModes() {
+    return {
+      chat: chatModeInput ? chatModeInput.checked : modes.chat,
+      audio: audioModeInput ? audioModeInput.checked : modes.audio,
+      video: videoModeInput ? videoModeInput.checked : modes.video,
+    };
+  }
+
   function renderAvailabilityUI() {
     if (availabilityInput) availabilityInput.checked = isAvailable;
     if (availabilityStateEl) {
       availabilityStateEl.textContent = isAvailable ? "✅" : "🛑";
     }
+    // The mode choice is locked while Available for the same reason it always
+    // was: permissions are acquired at Go-Available for the picked modes, so
+    // changing them mid-shift would need a re-acquire the UI has no place for.
+    [chatModeInput, audioModeInput, videoModeInput].forEach((el) => {
+      if (el) el.disabled = isAvailable;
+    });
+    if (chatModeInput) chatModeInput.checked = modes.chat;
+    if (audioModeInput) audioModeInput.checked = modes.audio;
     if (videoModeInput) {
       videoModeInput.checked = wantsVideo;
-      videoModeInput.disabled = isAvailable; // lock the mode choice while available
+      // Video additionally needs the hardware to exist. Capability and intent
+      // are separate: no camera means the intent cannot be honoured.
+      if (!perms.hasCamera) videoModeInput.disabled = true;
     }
   }
   renderAvailabilityUI();
 
-  // Video-mode picker: editable only while Paused; saved per-browser.
-  if (videoModeInput) {
-    videoModeInput.addEventListener("change", () => {
-      wantsVideo = videoModeInput.checked;
-      saveVideoPref(wantsVideo);
+  // Mode pickers: editable only while Paused; the video one is saved
+  // per-browser as before.
+  [chatModeInput, audioModeInput, videoModeInput].forEach((el) => {
+    if (!el) return;
+    el.addEventListener("change", () => {
+      modes = currentModes();
+      if (el === videoModeInput) {
+        wantsVideo = videoModeInput.checked;
+        saveVideoPref(wantsVideo);
+      }
+      // Turning everything off is the same thing as pausing. Say so, rather
+      // than leaving an "available for nothing" state the server would only
+      // silently collapse anyway.
+      if (isAvailable && !modes.chat && !modes.audio && !modes.video) {
+        if (availabilityInput) availabilityInput.checked = false;
+        availabilityInput?.dispatchEvent(new Event("change", { bubbles: true }));
+      }
     });
-  }
+  });
 
   // ─── Device pickers (mic / camera), like Zoom/Meet ─────────────────────
   // Labels are exposed only after a media permission is granted, and
@@ -906,6 +955,7 @@
   let callRole = null; // 'caller' | 'callee'
   let currentCallId = null;
   let currentCallChannel = null;
+  let currentConv = null; // { cid, token, channel } for the active conversation
   let outgoingCall = null; // { targetSessionId, targetName, callType }
   let incomingCall = null; // { callId, callerId, callerName, callType }
   let peerConnection = null;
@@ -998,11 +1048,14 @@
   }
 
   // ─── Inbox ─────────────────────────────────────────────────────────────
-  inboxChannel = S.subscribeToInbox(sessionId, handleInboxMessage);
+  // The per-SESSION inbox:<sessionId> subscription that stood here is gone. Its
+  // name was published in the roster, so anyone could subscribe and read this
+  // agent's calls and messages. Only the user-keyed channel below remains, and
+  // the server binds it to its owner's identity from the handshake session.
+  //
   // User-keyed inbox: the server fans every ring out to ALL of this user's
-  // live consoles through this channel — so a guest holding a stale roster
-  // (an old session id from a closed tab) still rings the tabs that exist.
-  // Duplicate delivery with the per-session inbox is deduped by callId.
+  // live consoles through this channel, so a console opened after the ring
+  // still finds it.
   if (userId) {
     window.Realtime
       .channel(`inbox:user:${ref}:${userId}`)
@@ -1251,8 +1304,26 @@
       callType,
     });
 
-    // Subscribe to call channel
-    currentCallChannel = S.setupCallChannel(currentCallId, handleCallSignal);
+    // Open a private conversation and let the SERVER deliver the invitation —
+    // including the visitor's capability for it — to their private inbox. The
+    // agent holds no grant for someone else's inbox and must not: if they could
+    // write into it, so could anyone who learned a session id.
+    const invited = await S.inviteGuest({
+      guestSession: targetSessionId,
+      guestName: targetName,
+      callType,
+      callerName: displayName,
+      callId: currentCallId,
+    });
+    if (invited.error) {
+      await resetToReady();
+      return;
+    }
+    currentConv = { cid: invited.cid, token: invited.token, channel: invited.channel };
+    currentCallChannel = S.openConversation(currentConv, {
+      onSignal: handleCallSignal,
+      onMessage: (m) => IM.receive(m),
+    });
 
     // Show outgoing call UI
     const outH1 = document.querySelector(".call-outgoing h1");
@@ -1261,15 +1332,8 @@
     S.hideSection(".logs");
     S.showSection(".call-outgoing");
 
-    // Notify target (the popup the guest sees uses the public display name)
-    await S.sendToInbox(targetSessionId, {
-      type: "incoming-call",
-      callId: currentCallId,
-      callerId: sessionId,
-      callerName: displayName,
-      callerPicture: picture, // guest renders this on the call overlay
-      callType,
-    });
+    // The invitation was delivered server-side by inviteGuest above; there is
+    // no separate client notify, because the guest's inbox is capability-gated.
 
     // 5-second timeout
     callTimeoutTimer = setTimeout(async () => {
@@ -1308,7 +1372,16 @@
     // would start ringing and wedge the availability toggle ("can't change
     // during a call"). Tell the caller we're busy and drop it.
     if (state !== "ready" || !isAvailable) {
-      if (data.callerId) S.sendToInbox(data.callerId, { type: "call-busy" });
+      // Busy is reported over the conversation channel now — there is no
+      // caller session id to reply to, by design.
+      if (data.cid) {
+        S.agentConversationToken(data.cid).then((t) => {
+          if (!t.error) {
+            window.Realtime.publish(`conv:${data.cid}`, "signal",
+              { type: "call-busy" }, { token: t.token });
+          }
+        });
+      }
       return;
     }
 
@@ -1318,13 +1391,38 @@
   // Render the incoming-call UI and start ringing. Shared by the live inbox
   // path and the pending-invite re-hydration (after a push wakes the agent).
   // `data` is { callId, callType, callerName, callerId? }.
-  function presentIncomingCall(data) {
+  async function presentIncomingCall(data) {
     state = "incoming";
     callRole = "callee";
     incomingCall = data;
     currentCallId = data.callId;
 
-    currentCallChannel = S.setupCallChannel(currentCallId, handleCallSignal);
+    // Exchange the conversation id for THIS agent's capability. The server
+    // issues it only for a conversation they actually own, so a ring naming
+    // someone else's conversation gets nowhere. Signalling then rides that
+    // private channel instead of the guessable call:<callId> it used to.
+    if (data.cid) {
+      const t = await S.agentConversationToken(data.cid);
+      if (t.error) {
+        // Not ours, or gone. Drop the ring rather than presenting a call that
+        // could never connect.
+        state = "ready";
+        currentCallId = null;
+        return;
+      }
+      currentConv = { cid: data.cid, token: t.token, channel: t.channel };
+      currentCallChannel = S.openConversation(currentConv, {
+        onSignal: handleCallSignal,
+        onMessage: (m) => IM.receive(m),
+      });
+      // Chat rings arrive here too: show the thread and everything already said
+      // rather than an empty dock the guest cannot tell apart from being ignored.
+      if (data.callType === "chat") {
+        IM.open({ cid: data.cid, token: t.token, name: t.guestName || data.callerName });
+        state = "ready";
+        return;
+      }
+    }
 
     const callType = data.callType === "video" ? "video" : "audio";
     // Ring — and if the browser blocks the audio (a console that resumed
@@ -1980,11 +2078,12 @@
     // peerId -> { id, name, role, online, messages:[{dir,text,ts}], unread }
     const threads = new Map();
     let activePeerId = null;
+    let conv = null; // { cid, token } when the active thread is a conversation
     let roster = []; // latest presence snapshot (excluding self)
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {} };
+      return { updateRoster() {}, receive() {}, open() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2124,12 +2223,48 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // open(): show a conversation thread and its transcript. The agent side of
+    // guest-initiated chat — a push-woken console opening to an empty dock
+    // while the guest can see everything they typed is exactly the asymmetry
+    // the transcript exists to remove.
+    function open({ cid, token, name: peerName, picture: peerPicture }) {
+      conv = { cid, token };
+      activePeerId = cid;
+      if (!threads.has(cid)) {
+        threads.set(cid, {
+          id: cid, name: peerName || "Visitor", picture: peerPicture || "",
+          role: "guest", messages: [],
+        });
+      }
+      S.showSection(".im");
+      section.classList.remove("im-collapsed");
+      renderMessages();
+      S.loadTranscript({ ref, cid, token }).then((res) => {
+        const t = threads.get(cid);
+        if (!t || !res.messages || !res.messages.length) return;
+        t.messages = res.messages.map((m) => ({
+          dir: m.sender === "agent" ? "out" : "in",
+          text: m.body,
+          ts: m.created_at * 1000,
+        }));
+        renderMessages();
+      });
+    }
+
     async function send(text) {
       if (!activePeerId || !text) return;
       const t = threads.get(activePeerId);
       if (!t) return;
       t.messages.push({ dir: "out", text, ts: Date.now() });
       renderMessages();
+      // A conversation thread goes over its private channel; anything else is
+      // still the agent-to-agent inbox.
+      if (conv && activePeerId === conv.cid) {
+        await S.sendConversationMessage({
+          ref, cid: conv.cid, token: conv.token, body: text,
+        });
+        return;
+      }
       // Guests see the public display name; fellow agents see the real name.
       const outName = t.role === "guest" ? displayName : name;
       await S.sendIM(activePeerId, {
@@ -2168,7 +2303,7 @@
       send(text);
     });
 
-    return { updateRoster, receive };
+    return { updateRoster, receive, open };
   })();
 
   // ─── Helpers ──────────────────────────────────────────────────────────

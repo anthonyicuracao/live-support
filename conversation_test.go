@@ -105,40 +105,62 @@ func TestCanUseChannelAuthorization(t *testing.T) {
 	agent := &Conn{grants: map[string]bool{}, agentRef: "acme.com"}
 
 	t.Run("guest cannot read a conversation it has no token for", func(t *testing.T) {
-		if guest.canUseChannel(convChannel("someone-elses-conversation")) {
+		if guest.canUseChannel("subscribe", convChannel("someone-elses-conversation")) {
 			t.Error("un-granted conversation channel was usable")
 		}
 	})
 
 	t.Run("guest can use exactly the conversation it was granted", func(t *testing.T) {
 		guest.grant(convChannel("mine"))
-		if !guest.canUseChannel(convChannel("mine")) {
+		if !guest.canUseChannel("subscribe", convChannel("mine")) {
 			t.Error("granted channel was refused")
 		}
-		if guest.canUseChannel(convChannel("not-mine")) {
+		if guest.canUseChannel("subscribe", convChannel("not-mine")) {
 			t.Error("a grant for one conversation leaked into another")
 		}
 	})
 
-	t.Run("guest cannot read the agent roster", func(t *testing.T) {
-		// presence:<ref> used to be readable by anyone who could guess the
-		// tenant domain, which exposed every agent's name and availability.
-		if guest.canUseChannel("presence:acme.com") {
+	t.Run("guest cannot READ the roster but may announce itself", func(t *testing.T) {
+		// presence is asymmetric on purpose: a directory everyone writes and
+		// only agents read. Reading it was the leak; writing is how a visitor
+		// appears in the console's waiting list at all.
+		if guest.canUseChannel("subscribe", "presence:acme.com") {
 			t.Error("guest could subscribe to presence")
 		}
-		if guest.canUseChannel("dashboard:acme.com") {
+		if !guest.canUseChannel("track", "presence:acme.com") {
+			t.Error("guest could not announce itself — the console would show no visitors")
+		}
+		if guest.canUseChannel("subscribe", "dashboard:acme.com") {
 			t.Error("guest could subscribe to the dashboard channel")
+		}
+		if guest.canUseChannel("track", "dashboard:acme.com") {
+			t.Error("guest could write to the dashboard channel")
+		}
+	})
+
+	t.Run("guest inbox needs its own capability", func(t *testing.T) {
+		// How an agent opens contact with a visitor. Server-minted id, so an
+		// agent seeing it in presence still cannot subscribe to it.
+		if guest.canUseChannel("subscribe", guestChannel("some-visitor")) {
+			t.Error("un-granted guest inbox was usable")
+		}
+		guest.grant(guestChannel("me"))
+		if !guest.canUseChannel("subscribe", guestChannel("me")) {
+			t.Error("granted guest inbox was refused")
+		}
+		if agent.canUseChannel("subscribe", guestChannel("me")) {
+			t.Error("an agent could subscribe to a visitor's inbox without a token")
 		}
 	})
 
 	t.Run("agent gets presence for their own tenant only", func(t *testing.T) {
-		if !agent.canUseChannel("presence:acme.com") {
+		if !agent.canUseChannel("subscribe", "presence:acme.com") {
 			t.Error("agent refused presence for their own tenant")
 		}
-		if agent.canUseChannel("presence:other-tenant.com") {
+		if agent.canUseChannel("subscribe", "presence:other-tenant.com") {
 			t.Error("agent could read another tenant's presence")
 		}
-		if agent.canUseChannel("dashboard:other-tenant.com") {
+		if agent.canUseChannel("subscribe", "dashboard:other-tenant.com") {
 			t.Error("agent could read another tenant's dashboard")
 		}
 	})
@@ -146,9 +168,22 @@ func TestCanUseChannelAuthorization(t *testing.T) {
 	t.Run("unknown namespaces are refused", func(t *testing.T) {
 		// A positive whitelist: a new namespace must be an explicit decision.
 		for _, ch := range []string{"inbox:abc", "", "random", "conv", "presence"} {
-			if agent.canUseChannel(ch) {
-				t.Errorf("unknown channel %q was allowed", ch)
+			for _, act := range []string{"subscribe", "broadcast", "track"} {
+				if agent.canUseChannel(act, ch) {
+					t.Errorf("unknown channel %q was allowed for %s", ch, act)
+				}
 			}
+		}
+	})
+
+	t.Run("a token names its own channel", func(t *testing.T) {
+		// The client never supplies a channel name, so naming one it holds no
+		// token for cannot talk it in.
+		if got := channelForToken(convToken{CID: "x", Role: convRoleGuest}); got != "conv:x" {
+			t.Errorf("guest conversation token → %q", got)
+		}
+		if got := channelForToken(convToken{CID: "x", Role: roleGuestSession}); got != "guest:x" {
+			t.Errorf("guest-session token → %q", got)
 		}
 	})
 }

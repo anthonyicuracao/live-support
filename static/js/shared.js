@@ -234,6 +234,34 @@ window.Shared = (() => {
 
   // ─── Inbox (point-to-point messaging) ───────────────────────────────────
   // Each user subscribes to their own inbox channel to receive call invitations.
+  // announcePresence: write-only presence, for a guest.
+  //
+  // Presence is asymmetric now — a directory everyone writes and only agents
+  // read. A visitor must still announce itself or it would never appear in the
+  // console's waiting list, but it no longer subscribes, because reading the
+  // roster back was the leak. The channel object is returned so the caller can
+  // keep updating its own entry.
+  function announcePresence(ref, sessionData) {
+    const channel = window.Realtime.channel(`presence:${ref}`);
+    // Deliberately no .subscribe() — track() alone is the write.
+    channel.track(sessionData);
+    return channel;
+  }
+
+  // guestSession: mint a visitor's session id AND the capability for their
+  // private inbox, together. Server-minted because an agent can see a session
+  // id in presence; if the client picked it, seeing it would be enough to ask
+  // for its token.
+  async function guestSession(ref) {
+    const resp = await fetch("/api/guest/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref }),
+    });
+    if (!resp.ok) return null;
+    return await resp.json(); // { sessionId, token, channel }
+  }
+
   // ─── Conversations (private, capability-gated) ──────────────────────────
   //
   // Replaces the inbox:<session_id> carrier. The old model made the channel
@@ -261,6 +289,20 @@ window.Shared = (() => {
       return { error: reason, status: resp.status };
     }
     return await resp.json(); // { cid, token, channel }
+  }
+
+  // Agent side: open contact with a visitor. The server creates the
+  // conversation and delivers the invitation (with the visitor's own
+  // capability) to their private inbox, because an agent holds no grant for
+  // someone else's inbox and must not be able to write into one.
+  async function inviteGuest({ guestSession, guestName, callType, callerName, callId }) {
+    const resp = await fetch("/api/conversation/invite", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestSession, guestName, callType, callerName, callId }),
+    });
+    if (!resp.ok) return { error: "invite failed", status: resp.status };
+    return await resp.json(); // { cid, token, channel, callId }
   }
 
   // Agent side: exchange a conversation id for this agent's capability. The
@@ -665,6 +707,9 @@ window.Shared = (() => {
     updatePresence,
     subscribeToInbox,
     sendToInbox,
+    announcePresence,
+    guestSession,
+    inviteGuest,
     startConversation,
     agentConversationToken,
     openConversation,
