@@ -1377,6 +1377,12 @@
       IM.receive(data);
       return;
     }
+    // A visitor's chat message. Not a ring: no accept/decline, no deadline, no
+    // repeating alert — the message IS the event, so it just arrives.
+    if (data.type === "chat-message") {
+      IM.deliver(data);
+      return;
+    }
     if (data.type !== "incoming-call") return;
 
     // The same ring can arrive twice (per-session inbox + the user-keyed
@@ -2099,7 +2105,7 @@
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {}, open() {} };
+      return { updateRoster() {}, receive() {}, open() {}, deliver() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2239,6 +2245,55 @@
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
+    // deliver(): a visitor's chat message arrived.
+    //
+    // Selection rule (Ron, 2026-08-01): auto-select the thread when the agent
+    // is not already mid-conversation, so the common case — one visitor, one
+    // chat — needs no clicking. But if the currently open thread has an inbound
+    // message the agent has not answered yet, a message from a DIFFERENT
+    // visitor only badges as unread. Yanking the view away mid-reply loses what
+    // they were typing and, worse, risks sending it to the wrong person.
+    async function deliver(data) {
+      const cid = data.cid;
+      if (!cid || !data.message) return;
+
+      let t = threads.get(cid);
+      if (!t) {
+        // First message of a conversation this console has not seen. Claim our
+        // capability so replies can go back over it.
+        const tok = await S.agentConversationToken(cid);
+        if (tok.error) return;
+        t = {
+          id: cid, name: data.guestName || tok.guestName || "Visitor",
+          picture: "", role: "guest", messages: [], unread: 0,
+          conv: { cid, token: tok.token },
+        };
+        threads.set(cid, t);
+        S.openConversation({ channel: tok.channel, token: tok.token },
+          { onMessage: (m) => receive(m) });
+      }
+
+      t.messages.push({ dir: "in", text: data.message.body, ts: (data.message.created_at || 0) * 1000 });
+      t.awaitingReply = true;
+
+      const active = activePeerId ? threads.get(activePeerId) : null;
+      const busyReplying = active && active.id !== cid && active.awaitingReply;
+
+      S.showSection(".im");
+      if (!busyReplying) {
+        activePeerId = cid;
+        section.classList.remove("im-collapsed");
+        t.unread = 0;
+      } else {
+        t.unread = (t.unread || 0) + 1;
+      }
+      renderRoster();
+      renderMessages();
+      renderDockUnread();
+      // One short notice, never a repeating ring.
+      S.playNotice();
+    }
+
     // open(): show a conversation thread and its transcript. The agent side of
     // guest-initiated chat — a push-woken console opening to an empty dock
     // while the guest can see everything they typed is exactly the asymmetry
@@ -2302,6 +2357,7 @@
       }
 
       t.messages.push({ dir: "out", text, ts: Date.now() });
+      t.awaitingReply = false; // answered — another visitor may now take focus
       renderMessages();
       // A conversation thread goes over its private channel; anything else is
       // still the agent-to-agent inbox.
@@ -2323,6 +2379,24 @@
     }
 
     function receive(data) {
+      // A conversation message from the guest side of an open conversation.
+      // deliver() handles the FIRST message (it has to mint a capability);
+      // this handles the rest, once the channel is already subscribed.
+      if (data && data.cid && data.body) {
+        if (data.sender === "agent") return; // our own echo
+        const ct = threads.get(data.cid);
+        if (!ct) return;
+        ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000 });
+        ct.awaitingReply = true;
+        const visible =
+          data.cid === activePeerId && !section.classList.contains("im-collapsed");
+        if (!visible) ct.unread = (ct.unread || 0) + 1;
+        renderRoster();
+        renderMessages();
+        renderDockUnread();
+        if (!visible) S.playNotice();
+        return;
+      }
       if (!data.fromId || !data.text) return;
       const t = thread({ id: data.fromId, name: data.fromName, role: data.fromRole, picture: data.fromPicture });
       t.messages.push({ dir: "in", text: data.text, ts: data.ts });
@@ -2349,7 +2423,7 @@
       send(text);
     });
 
-    return { updateRoster, receive, open };
+    return { updateRoster, receive, open, deliver };
   })();
 
   // ─── Helpers ──────────────────────────────────────────────────────────

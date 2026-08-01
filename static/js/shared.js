@@ -559,6 +559,38 @@ window.Shared = (() => {
     );
   }
 
+  // playNotice: one short blip for an arriving chat message.
+  //
+  // Deliberately NOT the ringtone: a ring means "answer me now, there is a
+  // deadline", and repeating it for typed messages is nagging. Synthesised via
+  // WebAudio rather than an asset so it cannot 404, and wrapped because a
+  // browser with no gesture yet will refuse to start an AudioContext — a
+  // silent notice is acceptable, a thrown error in the delivery path is not.
+  let noticeCtx = null;
+  function playNotice() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return false;
+      noticeCtx = noticeCtx || new Ctx();
+      if (noticeCtx.state === "suspended") noticeCtx.resume();
+      const now = noticeCtx.currentTime;
+      const osc = noticeCtx.createOscillator();
+      const gain = noticeCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.setValueAtTime(1175, now + 0.09);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+      osc.connect(gain).connect(noticeCtx.destination);
+      osc.start(now);
+      osc.stop(now + 0.24);
+      return true;
+    } catch (e) {
+      return false; // no audio available; the unread badge still tells the story
+    }
+  }
+
   function stopRingtone() {
     if (!ringtoneAudio) return;
     ringtoneAudio.pause();
@@ -728,6 +760,7 @@ window.Shared = (() => {
     primeRingtone,
     playRingtone,
     stopRingtone,
+    playNotice,
     requestNotifyPermission,
     notifyIncomingCall,
     clearIncomingNotification,

@@ -420,9 +420,63 @@ func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	id, _ := res.LastInsertId()
-	writeJSON(w, 200, map[string]any{"message": map[string]any{
+	msg := map[string]any{
 		"id": id, "cid": body.CID, "sender": t.Role, "body": text, "created_at": now,
-	}})
+	}
+
+	// A chat message from a visitor is not a ring — it is a message arriving.
+	// Deliver it to the agent's user-keyed inbox, which every one of their live
+	// consoles is already subscribed to, so a console that has not (yet) opened
+	// this conversation still learns about it.
+	//
+	// This is why chat does not go through /api/call/ring: ringing implies an
+	// accept/decline decision with a 30s deadline and a repeating alert, none of
+	// which fit a message someone typed.
+	if t.Role == convRoleGuest {
+		conv, cerr := conversationByCID(db, body.CID)
+		if cerr == nil {
+			notify, _ := json.Marshal(map[string]any{
+				"type":      "chat-message",
+				"cid":       body.CID,
+				"guestName": conv.GuestName,
+				"message":   msg,
+			})
+			hub.broadcast(userInboxChannel(conv.Ref, conv.AgentUserID), "message", notify)
+			// And wake a closed console. One notification, not the ring loop.
+			go pushChatMessage(conv, text)
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{"message": msg})
+}
+
+// pushChatMessage sends a single Web Push for an incoming chat message.
+//
+// Deliberately NOT the ring's re-push loop: a chat has no deadline to beat, so
+// re-alerting every few seconds would be nagging rather than helping.
+func pushChatMessage(conv conversation, text string) {
+	if !pushEnabled() {
+		return
+	}
+	db, err := dbs.get(conv.Ref)
+	if err != nil {
+		return
+	}
+	subs := subsForUser(db, conv.Ref, conv.AgentUserID)
+	if len(subs) == 0 {
+		return
+	}
+	who := conv.GuestName
+	if who == "" {
+		who = "A visitor"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type": "chat-message", "ref": conv.Ref, "cid": conv.CID,
+		"callerName": who, "body": safePrefix(text, 120),
+	})
+	for _, s := range subs {
+		sendWebPush(db, s, payload)
+	}
 }
 
 // GET /api/conversation/messages?ref=&cid=&token=: the transcript.

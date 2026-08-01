@@ -445,9 +445,11 @@
       onMessage: (m) => IM.receive(m),
     });
     IM.open({ cid: conv.cid, token: conv.token, name: target.name, picture: target.picture });
-    // Same ring path as a call: a chat must be able to wake a closed console,
-    // which is exactly what the old agent-initiated-only chat could not do.
-    await ringPush(conv.cid, "chat");
+    // Deliberately NO ring. Starting a chat is not placing a call: the visitor
+    // types immediately, and the agent is alerted by the MESSAGE — the server
+    // delivers it to their console, and pushes to a closed one, when it is
+    // sent. Ringing here made a chat present as an accept/decline call with a
+    // 30-second deadline, which is not what either side is doing.
   }
 
   // ─── Initiate call (guest → auth) ──────────────────────────────────────
@@ -1136,8 +1138,23 @@
     }
 
     function receive(data) {
-      // Only inbound admin messages create or update a thread. This is the
-      // sole way a guest ever learns an admin's session id.
+      // A conversation message: { id, cid, sender, body, created_at }. This is
+      // the shape everything now travels in; the legacy {fromId,text} branch
+      // below is only the agent-to-agent inbox format.
+      if (data && data.cid && data.body) {
+        if (data.sender === "guest") return; // our own echo
+        const ct = threads.get(data.cid);
+        if (!ct) return;
+        ct.messages.push({ dir: "in", text: data.body, ts: (data.created_at || 0) * 1000 });
+        activeAdminId = data.cid;
+        S.showSection(".im");
+        if (section.classList.contains("im-collapsed")) {
+          unread += 1;
+          renderDockUnread();
+        }
+        renderMessages();
+        return;
+      }
       if (!data.fromId || !data.text) return;
       let t = threads.get(data.fromId);
       if (!t) {
