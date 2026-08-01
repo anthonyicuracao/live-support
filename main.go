@@ -244,6 +244,12 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_activity_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_user_id, ended_at);
+-- A visitor has AT MOST ONE open conversation per modality. Stating it as a
+-- constraint rather than a convention: the bug this fixes was two code paths
+-- each creating a conversation without asking whether one existed, so a visitor
+-- and an agent ended up in two conversations holding half the exchange each.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_open_unique
+  ON conversations(ref, guest_session, call_type) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_conversations_ref ON conversations(ref);
 -- Chat transcript. The live carrier is the conversation's WS channel; this is
 -- the record, so an agent woken by push into a fresh console sees what the

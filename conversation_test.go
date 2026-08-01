@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -300,10 +301,15 @@ func TestCapacityRoutesNeverRefuses(t *testing.T) {
 		t.Fatalf("upsertAvailability: %v", err)
 	}
 
+	// A DISTINCT visitor per call. Reusing one session id would (correctly) now
+	// resume that visitor's open conversation rather than create another —
+	// which is the invariant, not a capacity question.
+	n := 0
 	start := func() (int, string) {
+		n++
 		return postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
 			"ref": testRef, "callType": callTypeChat,
-			"guestSession": "guest-sess", "guestName": "Guest",
+			"guestSession": fmt.Sprintf("guest-%d", n), "guestName": "Guest",
 		})
 	}
 
@@ -324,7 +330,7 @@ func TestCapacityRoutesNeverRefuses(t *testing.T) {
 	// falling off one modality must never look like going offline.
 	stAudio, bodyAudio := postJSON(t, c, srv.URL+"/api/conversation/start", map[string]any{
 		"ref": testRef, "callType": callTypeAudio,
-		"guestSession": "guest-sess", "guestName": "Guest",
+		"guestSession": "guest-audio", "guestName": "Guest",
 	})
 	if stAudio != 200 {
 		t.Errorf("audio start = %d while chat-loaded, want 200", stAudio)
@@ -450,4 +456,97 @@ func TestPublicRosterDoesNotExposeSessionID(t *testing.T) {
 	if !bytes.Contains([]byte(body), []byte("Listed")) {
 		t.Fatalf("precondition: the agent should appear in the roster at all; got %s", body)
 	}
+}
+
+// The lifecycle invariant that was missing entirely, and whose absence produced
+// four separate UI symptoms: a visitor has AT MOST ONE open conversation per
+// modality. Both creation paths must join it rather than mint a rival.
+func TestOneOpenConversationPerVisitorPerModality(t *testing.T) {
+	srv, db := newServer(t)
+	agent := loginAdmin(t, srv)
+
+	uid := mustUser(t, db, "chat-agent")
+	if err := upsertAvailability(db, testRef, uid, true, "sess", "Agent", false, "", "",
+		modes{Chat: true, Audio: true}); err != nil {
+		t.Fatalf("upsertAvailability: %v", err)
+	}
+
+	guest := newClient(t)
+	startChat := func() map[string]any {
+		_, body := postJSON(t, guest, srv.URL+"/api/conversation/start", map[string]any{
+			"ref": testRef, "callType": callTypeChat,
+			"guestSession": "visitor-1", "guestName": "Visitor",
+		})
+		var out map[string]any
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		return out
+	}
+
+	first := startChat()
+	cid, _ := first["cid"].(string)
+	if cid == "" {
+		t.Fatalf("no cid in %v", first)
+	}
+
+	t.Run("the visitor clicking Chat again resumes", func(t *testing.T) {
+		again := startChat()
+		if again["cid"] != cid {
+			t.Errorf("second start made a new conversation %v, want %s", again["cid"], cid)
+		}
+		if again["resumed"] != true {
+			t.Errorf("second start should report resumed:true, got %v", again["resumed"])
+		}
+	})
+
+	t.Run("the agent replying joins the SAME conversation", func(t *testing.T) {
+		// This is the one that broke it: the console created its own, so the
+		// two of them held half the exchange each.
+		_, page := getBody(t, agent, wr(srv, "/users"))
+		_ = page
+		_, body := postJSON(t, agent, wr(srv, "/api/conversation/invite"), map[string]any{
+			"guestSession": "visitor-1", "guestName": "Visitor",
+			"callType": callTypeChat, "callerName": "Agent",
+		})
+		var out map[string]any
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		if out["cid"] != cid {
+			t.Errorf("agent invite made conversation %v, want the visitor's %s", out["cid"], cid)
+		}
+		if out["resumed"] != true {
+			t.Errorf("agent invite into an open conversation should report resumed:true, got %v", out["resumed"])
+		}
+	})
+
+	t.Run("exactly one open chat row exists", func(t *testing.T) {
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM conversations
+			  WHERE ref = ? AND guest_session = ? AND call_type = ? AND ended_at IS NULL`,
+			testRef, "visitor-1", callTypeChat).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("%d open chat conversations for one visitor, want 1", n)
+		}
+	})
+
+	t.Run("a call is a separate conversation from a chat", func(t *testing.T) {
+		// Modality-scoped, not visitor-scoped: a call may run alongside a chat.
+		_, body := postJSON(t, guest, srv.URL+"/api/conversation/start", map[string]any{
+			"ref": testRef, "callType": callTypeAudio,
+			"guestSession": "visitor-1", "guestName": "Visitor",
+		})
+		var out map[string]any
+		_ = json.Unmarshal([]byte(body), &out)
+		if out["cid"] == cid {
+			t.Error("an audio call reused the chat conversation")
+		}
+		if out["cid"] == nil || out["cid"] == "" {
+			t.Errorf("no conversation created for the call: %s", body)
+		}
+	})
 }

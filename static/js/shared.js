@@ -310,6 +310,14 @@ window.Shared = (() => {
     return await resp.json(); // { cid, token, channel, callId }
   }
 
+  // Agent side: the conversations this agent still has open, with a capability
+  // for each. What lets a reopened console pick up where it left off.
+  async function listConversations() {
+    const resp = await fetch("/api/conversations");
+    if (!resp.ok) return { conversations: [] };
+    return await resp.json();
+  }
+
   // Agent side: exchange a conversation id for this agent's capability. The
   // server issues it only for a conversation they actually own.
   async function agentConversationToken(cid) {
@@ -747,6 +755,7 @@ window.Shared = (() => {
     announcePresence,
     guestSession,
     inviteGuest,
+    listConversations,
     startConversation,
     agentConversationToken,
     openConversation,

@@ -174,6 +174,28 @@ type conversation struct {
 	EndedAt      sql.NullInt64
 }
 
+// openConversationFor returns the visitor's existing OPEN conversation for a
+// modality, or false if they have none.
+//
+// This is the invariant the whole lifecycle rests on and which was missing: a
+// visitor has at most one open conversation per modality. Without it, the guest
+// clicking Chat and the agent replying from the roster each minted their own,
+// so the two of them were in different conversations and each saw half the
+// exchange.
+func openConversationFor(db *sql.DB, ref, guestSession, callType string) (conversation, bool) {
+	var c conversation
+	err := db.QueryRow(
+		`SELECT cid, ref, guest_session, guest_name, agent_user_id, call_type, created_at, ended_at
+		   FROM conversations
+		  WHERE ref = ? AND guest_session = ? AND call_type = ? AND ended_at IS NULL
+		  ORDER BY created_at DESC LIMIT 1`, ref, guestSession, callType).
+		Scan(&c.CID, &c.Ref, &c.GuestSession, &c.GuestName, &c.AgentUserID, &c.CallType, &c.CreatedAt, &c.EndedAt)
+	if err != nil {
+		return conversation{}, false
+	}
+	return c, true
+}
+
 func createConversation(db *sql.DB, c conversation) error {
 	_, err := db.Exec(
 		`INSERT INTO conversations (cid, ref, guest_session, guest_name, agent_user_id, call_type, created_at)
@@ -375,6 +397,23 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		errJSON(w, 400, err.Error())
 		return
 	}
+	// Join the visitor's existing open conversation for this modality rather
+	// than minting a second one. Starting a chat you already have is resuming
+	// it, not beginning another; the agent's half of the exchange lives there.
+	if existing, ok := openConversationFor(db, body.Ref, body.GuestSession, body.CallType); ok {
+		tok, terr := mintConvToken(a.ssoSecret, existing.CID, convRoleGuest)
+		if terr != nil {
+			errJSON(w, 500, "internal error")
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"cid": existing.CID, "token": tok, "channel": convChannel(existing.CID),
+			"agentId": existing.AgentUserID, "waiting": false,
+			"callType": existing.CallType, "resumed": true,
+		})
+		return
+	}
+
 	// Route. Capacity SORTS here, it never gates: a visitor is not turned away
 	// because of an agent-side accounting number. This replaced a 429 that made
 	// an abandoned test chat permanently unreachable for everyone.
@@ -742,18 +781,29 @@ func (a *authApp) conversationInviteHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	cid, err := newConvID()
-	if err != nil {
-		errJSON(w, 500, "internal error")
-		return
-	}
-	if err := createConversation(info.db, conversation{
-		CID: cid, Ref: info.ref, GuestSession: body.GuestSession,
-		GuestName: strings.TrimSpace(body.GuestName), AgentUserID: info.user.ID,
-		CallType: body.CallType, CreatedAt: time.Now().Unix(),
-	}); err != nil {
-		errJSON(w, 500, "store failed")
-		return
+	// Clicking a visitor OPENS the conversation with them — existing or new.
+	// Creating unconditionally is what put the two of them in separate
+	// conversations, each seeing only their own messages.
+	cid := ""
+	isNew := false
+	if existing, ok := openConversationFor(info.db, info.ref, body.GuestSession, body.CallType); ok {
+		cid = existing.CID
+	} else {
+		var err error
+		cid, err = newConvID()
+		if err != nil {
+			errJSON(w, 500, "internal error")
+			return
+		}
+		if err := createConversation(info.db, conversation{
+			CID: cid, Ref: info.ref, GuestSession: body.GuestSession,
+			GuestName: strings.TrimSpace(body.GuestName), AgentUserID: info.user.ID,
+			CallType: body.CallType, CreatedAt: time.Now().Unix(),
+		}); err != nil {
+			errJSON(w, 500, "store failed")
+			return
+		}
+		isNew = true
 	}
 	agentTok, err := mintConvToken(a.ssoSecret, cid, convRoleAgent)
 	if err != nil {
@@ -769,22 +819,72 @@ func (a *authApp) conversationInviteHandler(w http.ResponseWriter, r *http.Reque
 	if callID == "" {
 		callID = cid
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"type":       "incoming-call",
-		"cid":        cid,
-		"token":      guestTok, // the visitor's capability for THIS conversation
-		"callId":     callID,
-		"callType":   body.CallType,
-		"callerName": body.CallerName,
-	})
-	hub.broadcast(guestChannel(body.GuestSession), "message", payload)
+	// Only a NEW conversation is announced. Re-announcing one the visitor
+	// already has open would make their dock switch to a thread they are
+	// already in, which is how the visitor's own first message appeared to
+	// vanish: the view moved, the message did not.
+	if isNew {
+		payload, _ := json.Marshal(map[string]any{
+			"type":       "incoming-call",
+			"cid":        cid,
+			"token":      guestTok, // the visitor's capability for THIS conversation
+			"callId":     callID,
+			"callType":   body.CallType,
+			"callerName": body.CallerName,
+		})
+		hub.broadcast(guestChannel(body.GuestSession), "message", payload)
+	}
 
 	writeJSON(w, 200, map[string]any{
-		"cid": cid, "token": agentTok, "channel": convChannel(cid), "callId": callID,
+		"cid": cid, "token": agentTok, "channel": convChannel(cid),
+		"callId": callID, "resumed": !isNew,
 	})
 }
 
+// GET /api/conversations (authed): this agent's open conversations.
+//
+// Without this a console only learns of a conversation when a message happens
+// to arrive, so a reload silently emptied the agent's list while the visitor
+// carried on typing into it. Persistence is not just storing the transcript —
+// it is being able to come back to the conversation at all.
+func (a *authApp) conversationsListHandler(w http.ResponseWriter, r *http.Request) {
+	info := authFrom(r.Context())
+	if info == nil {
+		errJSON(w, 401, "not signed in")
+		return
+	}
+	rows, err := info.db.Query(
+		`SELECT cid, guest_session, guest_name, call_type, created_at, last_activity_at
+		   FROM conversations
+		  WHERE agent_user_id = ? AND ended_at IS NULL
+		  ORDER BY last_activity_at DESC`, info.user.ID)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"conversations": []any{}})
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var cid, gs, name, ct string
+		var created, act int64
+		if err := rows.Scan(&cid, &gs, &name, &ct, &created, &act); err != nil {
+			continue
+		}
+		tok, terr := mintConvToken(a.ssoSecret, cid, convRoleAgent)
+		if terr != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"cid": cid, "token": tok, "channel": convChannel(cid),
+			"guestSession": gs, "guestName": name, "callType": ct,
+			"createdAt": created, "lastActivityAt": act,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"conversations": out})
+}
+
 func (a *authApp) mountConversations(mux *http.ServeMux) {
+	mux.Handle("GET /api/conversations", a.authedJSON(a.conversationsListHandler))
 	mux.HandleFunc("POST /api/guest/session", a.guestSessionHandler)
 	mux.Handle("POST /api/conversation/invite", a.authedJSON(a.conversationInviteHandler))
 	mux.HandleFunc("POST /api/conversation/start", a.conversationStartHandler)

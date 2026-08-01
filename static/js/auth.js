@@ -2109,7 +2109,7 @@
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {}, open() {}, deliver() {} };
+      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2162,13 +2162,6 @@
         .map((u) => ({ id: u.session_id, name: u.name || "Unknown", role: u.role || "guest", picture: u.picture || "" }));
       const onlineIds = new Set(roster.map((u) => u.id));
 
-      // A visitor with an open conversation is listed by CID, not by presence
-      // session id. Drop the presence duplicate, or the same person appears
-      // twice — once per key — which is exactly what happened.
-      const convSessions = new Set();
-      for (const [, t] of threads) if (t.guestSession) convSessions.add(t.guestSession);
-      roster = roster.filter((u) => !convSessions.has(u.id));
-
       // Mark threads online/offline so history still shows for someone who has
       // just left. A conversation thread resolves its liveness through the
       // visitor's session id — a cid has no presence record of its own, which
@@ -2178,7 +2171,9 @@
       }
       // Header label: "Chats" + a live count of people available to chat.
       if (dockTitle) {
-        const chatCount = roster.length + convSessions.size;
+        let convSessionCount = 0;
+        for (const [, t] of threads) if (t.guestSession) convSessionCount++;
+        const chatCount = roster.length - convSessionCount + convSessionCount;
         dockTitle.textContent = chatCount ? `Chats (${chatCount})` : "Chats";
       }
       renderRoster();
@@ -2188,7 +2183,21 @@
       rosterEl.innerHTML = "";
       // Union of currently-online people and anyone we have an open thread with.
       const byId = new Map();
-      roster.forEach((u) => byId.set(u.id, { ...u, online: true }));
+      // A visitor with an open conversation is listed by CID. Their presence
+      // row is the SAME person under a different key, so it must not also be
+      // listed — that is the duplicate entry.
+      //
+      // The dedupe lives here, in the one function that composes the list,
+      // rather than in updateRoster: renderRoster is called directly from
+      // delivery too, and a filter applied elsewhere leaves a stale row behind
+      // until the next presence sync.
+      const convSessions = new Set();
+      for (const [, t] of threads) if (t.guestSession) convSessions.add(t.guestSession);
+
+      roster.forEach((u) => {
+        if (convSessions.has(u.id)) return;
+        byId.set(u.id, { ...u, online: true });
+      });
       for (const [id, t] of threads) {
         if (!byId.has(id)) byId.set(id, { id, name: t.name, role: t.role, picture: t.picture, online: t.online });
       }
@@ -2279,6 +2288,43 @@
       return true;
     }
 
+    // restore(): rebuild open conversations on console start.
+    //
+    // The transcript existed all along; what was missing was any way to LEARN
+    // which conversations are open, so a reload showed an empty list while the
+    // visitor was still typing into one.
+    async function restore() {
+      const res = await S.listConversations();
+      for (const c of res.conversations || []) {
+        if (c.callType !== "chat") continue; // a call does not survive a reload
+        if (threads.has(c.cid)) continue;
+        const t = {
+          id: c.cid, name: c.guestName || "Visitor", picture: "", role: "guest",
+          guestSession: c.guestSession || "", online: false,
+          messages: [], unread: 0, conv: { cid: c.cid, token: c.token },
+        };
+        threads.set(c.cid, t);
+        S.openConversation({ channel: c.channel, token: c.token },
+          { onMessage: (m) => receive(m) });
+        const tr = await S.loadTranscript({ ref, cid: c.cid, token: c.token });
+        t.seen = new Set();
+        for (const m of tr.messages || []) {
+          addMessage(t, m, m.sender === "agent" ? "out" : "in");
+        }
+      }
+      if (threads.size) {
+        S.showSection(".im");
+        renderRoster();
+        // Open the most recent so the agent lands somewhere usable rather than
+        // on "Select someone to chat".
+        if (!activePeerId) {
+          const first = threads.values().next().value;
+          if (first) openThread({ id: first.id, name: first.name, role: "guest", picture: first.picture });
+        }
+        renderDockUnread();
+      }
+    }
+
     // deliver(): a visitor's chat message arrived.
     //
     // Selection rule (Ron, 2026-08-01): auto-select the thread when the agent
@@ -2298,19 +2344,13 @@
         const tok = await S.agentConversationToken(cid);
         if (tok.error) return;
         const gs = data.guestSession || tok.guestSession || "";
-        // The SAME visitor may already be listed from presence, keyed by their
-        // session id. Absorb that entry rather than adding a second one — they
-        // were showing up twice, and the presence-keyed twin also read
-        // "(offline)" because a cid has no presence record of its own.
-        const twin = gs ? threads.get(gs) : null;
         t = {
-          id: cid, name: data.guestName || tok.guestName || (twin && twin.name) || "Visitor",
-          picture: (twin && twin.picture) || "", role: "guest",
-          guestSession: gs, online: twin ? twin.online : true,
-          messages: twin ? twin.messages : [], unread: 0,
+          id: cid, name: data.guestName || tok.guestName || "Visitor",
+          picture: "", role: "guest",
+          guestSession: gs, online: true,
+          messages: [], unread: 0,
           conv: { cid, token: tok.token },
         };
-        if (twin) threads.delete(gs);
         threads.set(cid, t);
         S.openConversation({ channel: tok.channel, token: tok.token },
           { onMessage: (m) => receive(m) });
@@ -2324,15 +2364,15 @@
 
       S.showSection(".im");
       if (!busyReplying) {
-        activePeerId = cid;
-        section.classList.remove("im-collapsed");
-        t.unread = 0;
+        // openThread(), not just activePeerId: the composer stays DISABLED
+        // until a thread is opened, which is why the agent had to hunt for the
+        // visitor in the list before they could type a reply.
+        openThread({ id: cid, name: t.name, role: "guest", picture: t.picture });
       } else {
         t.unread = (t.unread || 0) + 1;
+        renderRoster();
+        renderDockUnread();
       }
-      renderRoster();
-      renderMessages();
-      renderDockUnread();
       // One short notice, never a repeating ring.
       S.playNotice();
     }
@@ -2344,15 +2384,11 @@
     function open({ cid, token, name: peerName, picture: peerPicture, guestSession }) {
       activePeerId = cid;
       if (!threads.has(cid)) {
-        // Absorb a presence-keyed entry for the same visitor, same as deliver().
-        const twin = guestSession ? threads.get(guestSession) : null;
-        if (twin) threads.delete(guestSession);
         threads.set(cid, {
-          id: cid, name: peerName || (twin && twin.name) || "Visitor",
-          picture: peerPicture || (twin && twin.picture) || "",
+          id: cid, name: peerName || "Visitor",
+          picture: peerPicture || "",
           role: "guest", guestSession: guestSession || "",
-          online: twin ? twin.online : true,
-          messages: twin ? twin.messages : [],
+          online: true, messages: [],
         });
       }
       // Per-thread, not a single module-level `conv`: an agent may hold several
@@ -2399,12 +2435,40 @@
           console.error("[IM] could not open a conversation with", t.name, invited);
           return;
         }
+        // Re-key this thread to the conversation id. The server returns the
+        // visitor's EXISTING open conversation when there is one, so this is
+        // how a roster-clicked thread merges with the one their messages are
+        // already arriving on, instead of becoming a second entry.
+        const existing = threads.get(invited.cid);
+        if (existing && existing !== t) {
+          existing.messages = existing.messages.concat(t.messages);
+          existing.guestSession = existing.guestSession || t.id;
+          threads.delete(t.id);
+          t = existing;
+        } else {
+          threads.delete(t.id);
+          t.guestSession = t.id;
+          t.id = invited.cid;
+          threads.set(invited.cid, t);
+        }
+        // Selection must follow the re-key, or the composer points at a thread
+        // that no longer exists and silently refuses to send.
+        activePeerId = t.id;
         t.conv = { cid: invited.cid, token: invited.token };
-        // Subscribe so their replies arrive on this console.
         S.openConversation(
           { channel: invited.channel, token: invited.token },
           { onMessage: (m) => receive(m) }
         );
+        if (!t.loadedTranscript) {
+          t.loadedTranscript = true;
+          S.loadTranscript({ ref, cid: invited.cid, token: invited.token }).then((res) => {
+            if (!res.messages || !res.messages.length) return;
+            t.messages = [];
+            t.seen = new Set();
+            for (const m of res.messages) addMessage(t, m, m.sender === "agent" ? "out" : "in");
+            renderMessages();
+          });
+        }
       }
 
       t.messages.push({ dir: "out", text, ts: Date.now() });
@@ -2474,8 +2538,12 @@
       send(text);
     });
 
-    return { updateRoster, receive, open, deliver };
+    return { updateRoster, receive, open, deliver, restore };
   })();
+
+  // Rebuild open conversations now that IM exists. Not awaited: a slow restore
+  // must not delay the rest of the console coming up.
+  IM.restore().catch((e) => console.error("[IM] restore failed", e));
 
   // ─── Helpers ──────────────────────────────────────────────────────────
   function appendGreetingMessage(message, type) {
