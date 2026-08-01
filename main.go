@@ -245,12 +245,6 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_activity_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_user_id, ended_at);
--- A visitor has AT MOST ONE open conversation per modality. Stating it as a
--- constraint rather than a convention: the bug this fixes was two code paths
--- each creating a conversation without asking whether one existed, so a visitor
--- and an agent ended up in two conversations holding half the exchange each.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_open_unique
-  ON conversations(ref, guest_session, call_type) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_conversations_ref ON conversations(ref);
 -- Chat transcript. The live carrier is the conversation's WS channel; this is
 -- the record, so an agent woken by push into a fresh console sees what the
@@ -314,6 +308,38 @@ func openDB(path string) (*sql.DB, error) {
 	// the video toggle, while video_ok is INTENT (am I taking video calls).
 	// Conflating them is what made "I have a camera but I'm only taking chat"
 	// impossible to express.
+	// A visitor has at most one open conversation per modality. This is a
+	// MIGRATION, not schema, and the distinction is the whole lesson: it first
+	// lived in the schema block, which runs on every open. Tenants created
+	// before the invariant already held duplicates, so the CREATE UNIQUE INDEX
+	// failed, so openDB failed, so the tenant could not be opened AT ALL —
+	// every sign-in rejected with a generic "invalid or has expired", and the
+	// cause invisible.
+	//
+	// So: reconcile the data first, then constrain it, and treat failure as
+	// non-fatal. A missing index degrades an invariant to a convention, which
+	// the find-or-create paths already enforce in code. A tenant that will not
+	// open is total data loss from the user's point of view. Those are not
+	// remotely the same severity, and the schema block treated them as equal.
+	if _, err := d.Exec(
+		`UPDATE conversations SET ended_at = strftime('%s','now')
+		  WHERE ended_at IS NULL AND cid NOT IN (
+		    SELECT cid FROM (
+		      SELECT cid, ROW_NUMBER() OVER (
+		               PARTITION BY ref, guest_session, call_type
+		               ORDER BY last_activity_at DESC, created_at DESC
+		             ) AS rn
+		        FROM conversations WHERE ended_at IS NULL
+		    ) WHERE rn = 1
+		  )`); err != nil {
+		log.Printf("[DB] could not reconcile duplicate open conversations: %v", err)
+	}
+	if _, err := d.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_open_unique
+		   ON conversations(ref, guest_session, call_type) WHERE ended_at IS NULL`); err != nil {
+		log.Printf("[DB] open-conversation uniqueness not enforced at the schema level: %v", err)
+	}
+
 	var hasLastActivity int
 	_ = d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'last_activity_at'`).Scan(&hasLastActivity)
 	if hasLastActivity == 0 {

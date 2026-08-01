@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -549,4 +550,65 @@ func TestOneOpenConversationPerVisitorPerModality(t *testing.T) {
 			t.Errorf("no conversation created for the call: %s", body)
 		}
 	})
+}
+
+// A tenant whose data predates the one-open-conversation invariant must still
+// OPEN. The constraint first lived in the always-run schema block, so an
+// existing tenant with duplicates failed CREATE UNIQUE INDEX, failed openDB,
+// and became entirely unreachable — every sign-in rejected, cause invisible.
+func TestTenantWithPreExistingDuplicatesStillOpens(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.db")
+
+	// A tenant as it was BEFORE the invariant: two open chats for one visitor.
+	seed, err := openDB(path)
+	if err != nil {
+		t.Fatalf("initial open: %v", err)
+	}
+	// Drop the index to reproduce a database created BEFORE the invariant
+	// existed. Without this the first open already constrains the table and the
+	// duplicates cannot be seeded at all.
+	if _, err := seed.Exec(`DROP INDEX IF EXISTS idx_conversations_open_unique`); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	now := time.Now().Unix()
+	for i, cid := range []string{"dupe-a", "dupe-b", "dupe-c"} {
+		if _, err := seed.Exec(
+			`INSERT INTO conversations (cid, ref, guest_session, guest_name, agent_user_id, call_type, created_at, last_activity_at)
+			 VALUES (?, 'legacy.test', 'visitor-1', 'V', 1, 'chat', ?, ?)`,
+			cid, now+int64(i), now+int64(i)); err != nil {
+			t.Fatalf("seed %s: %v", cid, err)
+		}
+	}
+	seed.Close()
+
+	// Reopening must succeed, not fail on the constraint.
+	db, err := openDB(path)
+	if err != nil {
+		t.Fatalf("a tenant with pre-existing duplicates failed to open: %v", err)
+	}
+	defer db.Close()
+
+	// And the duplicates are reconciled rather than left to break it again:
+	// the most recent survives, the rest are closed (not deleted — they hold
+	// real transcript).
+	var open int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM conversations WHERE ended_at IS NULL AND guest_session = 'visitor-1'`).
+		Scan(&open); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if open != 1 {
+		t.Errorf("%d open conversations after reconciliation, want 1", open)
+	}
+	var survivor string
+	_ = db.QueryRow(`SELECT cid FROM conversations WHERE ended_at IS NULL AND guest_session = 'visitor-1'`).Scan(&survivor)
+	if survivor != "dupe-c" {
+		t.Errorf("survivor is %q, want the most recently active (dupe-c)", survivor)
+	}
+	var total int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM conversations`).Scan(&total)
+	if total != 3 {
+		t.Errorf("%d conversations remain, want 3 — reconciliation must CLOSE, never delete", total)
+	}
 }
