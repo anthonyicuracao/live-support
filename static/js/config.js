@@ -65,8 +65,14 @@ window.configReady = (async function () {
       wsOpen = true;
       openWaiters.forEach((fn) => fn());
       openWaiters = [];
-      // Re-establish all channel subscriptions and presence tracks
+      // Re-establish all channel subscriptions and presence tracks.
+      // A conversation channel must re-present its capability token FIRST: the
+      // server authorises per connection, and a reconnect is a new connection,
+      // so its grants start empty. Subscribing without re-authing would be
+      // refused and the conversation would go quietly deaf after a network
+      // blip — the exact class of silent failure this work exists to remove.
       for (const ch of channels.values()) {
+        if (ch._token) rawSend({ action: "auth", token: ch._token });
         rawSend({ action: "subscribe", channel: ch.name });
         if (ch._trackedState) {
           rawSend({ action: "track", channel: ch.name, key: ch._presenceKey, state: ch._trackedState });
@@ -86,6 +92,12 @@ window.configReady = (async function () {
       const ch = channels.get(msg.channel);
       if (msg.type === "ack" && msg.action === "subscribe") {
         if (ch) ch._fireStatus("SUBSCRIBED");
+      } else if (msg.type === "error") {
+        // The server refused the channel — no token, wrong token, or a
+        // namespace this connection may not use. Surface it rather than
+        // leaving the caller subscribed-in-name-only and silently deaf.
+        console.error("[Realtime] refused:", msg.action, msg.channel || "");
+        if (ch) ch._fireStatus("CHANNEL_ERROR");
       } else if (msg.type === "broadcast") {
         if (ch) ch._fireBroadcast(msg.event, msg.payload);
       } else if (msg.type === "presence") {
@@ -125,6 +137,10 @@ window.configReady = (async function () {
   class Channel {
     constructor(name, opts = {}) {
       this.name = name;
+      // Capability token for a conv:<cid> channel. Held so it can be
+      // re-presented on every reconnect; grants live on the connection, not
+      // on the channel name.
+      this._token = opts?.token || null;
       this._presenceKey = opts?.config?.presence?.key || null;
       this._broadcastHandlers = {}; // event -> [fn]
       this._presenceSyncHandlers = [];
@@ -147,6 +163,10 @@ window.configReady = (async function () {
     subscribe(cb) {
       if (cb) this._statusCallbacks.push(cb);
       channels.set(this.name, this);
+      // Auth before subscribe, and in that order: the server derives the
+      // channel from the TOKEN, so this is what makes the following subscribe
+      // legal. Both go through the same queue, so ordering is preserved.
+      if (this._token) send({ action: "auth", token: this._token });
       send({ action: "subscribe", channel: this.name });
       return this;
     }
@@ -215,9 +235,15 @@ window.configReady = (async function () {
       if (existing) return existing;
       return new Channel(name, opts);
     },
-    // One-shot publish to a channel without subscribing to it. The hub relays
-    // broadcasts to current subscribers regardless of sender subscription.
-    async publish(channelName, event, payload) {
+    // One-shot publish to a channel without subscribing to it.
+    //
+    // The hub relays to current subscribers regardless of the sender's
+    // subscription, but it now AUTHORISES the send — so a conversation channel
+    // needs its token presented on this connection first. Pass it here when
+    // publishing without having subscribed; when the caller already subscribed
+    // with a token the grant is in place and this is a no-op.
+    async publish(channelName, event, payload, opts) {
+      if (opts?.token) await send({ action: "auth", token: opts.token });
       return send({ action: "broadcast", channel: channelName, event, payload });
     },
     // Run fn after every RE-connect (not the initial open) — use it to refetch

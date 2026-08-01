@@ -330,8 +330,111 @@ func (a *authApp) conversationEndHandler(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// authConv resolves (and authorises) a conversation from a capability token.
+// Every transcript endpoint goes through it, so there is exactly one place that
+// decides whether a caller may touch a conversation's contents.
+func (a *authApp) authConv(ref, cid, token string) (*sql.DB, conversation, bool) {
+	var zero conversation
+	t, err := parseConvToken(a.ssoSecret, token)
+	if err != nil || cid == "" || t.CID != cid {
+		return nil, zero, false
+	}
+	if !dbs.exists(ref) {
+		return nil, zero, false
+	}
+	db, err := dbs.get(ref)
+	if err != nil {
+		return nil, zero, false
+	}
+	conv, err := conversationByCID(db, cid)
+	if err != nil || conv.Ref != ref {
+		return nil, zero, false
+	}
+	return db, conv, true
+}
+
+// POST /api/conversation/message: append to the transcript.
+//
+// Persisted here rather than only broadcast, so a message the other side has
+// seen is always one the record already holds. The sender is taken from the
+// TOKEN's role, never from the request body — otherwise a guest could write
+// messages attributed to the agent.
+func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	var body struct {
+		Ref   string `json:"ref"`
+		CID   string `json:"cid"`
+		Token string `json:"token"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	t, terr := parseConvToken(a.ssoSecret, body.Token)
+	db, _, ok := a.authConv(body.Ref, body.CID, body.Token)
+	if terr != nil || !ok {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	text := strings.TrimSpace(body.Body)
+	if text == "" {
+		errJSON(w, 400, "empty message")
+		return
+	}
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+	now := time.Now().Unix()
+	res, err := db.Exec(
+		`INSERT INTO chat_messages (cid, sender, body, created_at) VALUES (?, ?, ?, ?)`,
+		body.CID, t.Role, text, now)
+	if err != nil {
+		errJSON(w, 500, "store failed")
+		return
+	}
+	id, _ := res.LastInsertId()
+	writeJSON(w, 200, map[string]any{"message": map[string]any{
+		"id": id, "cid": body.CID, "sender": t.Role, "body": text, "created_at": now,
+	}})
+}
+
+// GET /api/conversation/messages?ref=&cid=&token=: the transcript.
+//
+// This is what stops a push-woken agent opening a fresh console to an empty
+// thread while the guest can see everything they typed.
+func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	q := r.URL.Query()
+	db, _, ok := a.authConv(q.Get("ref"), q.Get("cid"), q.Get("token"))
+	if !ok {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	rows, err := db.Query(
+		`SELECT id, sender, body, created_at FROM chat_messages WHERE cid = ? ORDER BY id`, q.Get("cid"))
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"messages": []any{}})
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, created int64
+		var sender, msgBody string
+		if err := rows.Scan(&id, &sender, &msgBody, &created); err == nil {
+			out = append(out, map[string]any{
+				"id": id, "sender": sender, "body": msgBody, "created_at": created,
+			})
+		}
+	}
+	writeJSON(w, 200, map[string]any{"messages": out})
+}
+
 func (a *authApp) mountConversations(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversation/start", a.conversationStartHandler)
 	mux.Handle("GET /api/conversation/token", a.authedJSON(a.conversationTokenHandler))
 	mux.HandleFunc("POST /api/conversation/end", a.conversationEndHandler)
+	mux.HandleFunc("POST /api/conversation/message", a.conversationMessageHandler)
+	mux.HandleFunc("GET /api/conversation/messages", a.conversationMessagesHandler)
 }

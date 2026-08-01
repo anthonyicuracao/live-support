@@ -45,6 +45,21 @@ func TestConvTokenIsScopedToOneConversation(t *testing.T) {
 func TestConvTokenRejectsForgeries(t *testing.T) {
 	good, _ := mintConvToken(convTestSecret, "conv-x", convRoleGuest)
 
+	// Mutate a character in the MIDDLE of the token, not the last one.
+	//
+	// base64's final character carries padding bits that the decoder ignores
+	// when the payload length is not a multiple of 3, so flipping it can decode
+	// to byte-identical output and the token stays valid. That is a property of
+	// the encoding, not a weakness in the AEAD — but it made this test flake
+	// about one run in three. A middle character always changes a real
+	// ciphertext byte, so the GCM tag check always rejects it.
+	mid := len(good) / 2
+	repl := byte('A')
+	if good[mid] == 'A' {
+		repl = 'B'
+	}
+	flipped := good[:mid] + string(repl) + good[mid+1:]
+
 	cases := []struct {
 		name  string
 		token string
@@ -52,7 +67,7 @@ func TestConvTokenRejectsForgeries(t *testing.T) {
 		{"empty", ""},
 		{"garbage", "not-a-token"},
 		{"truncated", good[:len(good)/2]},
-		{"flipped last char", good[:len(good)-1] + "A"},
+		{"flipped last char", flipped},
 	}
 	for _, c := range cases {
 		if _, err := parseConvToken(convTestSecret, c.token); err == nil {

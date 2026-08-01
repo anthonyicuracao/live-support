@@ -234,6 +234,87 @@ window.Shared = (() => {
 
   // ─── Inbox (point-to-point messaging) ───────────────────────────────────
   // Each user subscribes to their own inbox channel to receive call invitations.
+  // ─── Conversations (private, capability-gated) ──────────────────────────
+  //
+  // Replaces the inbox:<session_id> carrier. The old model made the channel
+  // NAME the capability, which only worked while an agent's session_id stayed
+  // private — and /api/agents/available later published it. Now the channel is
+  // keyed by a random conversation id that appears in no public response, and
+  // using it requires a token issued only to the two participants.
+  //
+  // Nothing here ever puts a token in a URL. Links get shared, logged, and leak
+  // through referrer headers; the capability is minted over POST after the
+  // guest has chosen who and how.
+
+  // Guest side: ask the server to create a conversation. The server decides
+  // whether it may exist (agent available, takes this modality, has chat
+  // capacity) and mints the guest's capability.
+  async function startConversation({ ref, agentUserId, callType, guestSession, guestName }) {
+    const resp = await fetch("/api/conversation/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, agentUserId, callType, guestSession, guestName }),
+    });
+    if (!resp.ok) {
+      let reason = "unavailable";
+      try { reason = (await resp.json()).error || reason; } catch (e) { /* keep default */ }
+      return { error: reason, status: resp.status };
+    }
+    return await resp.json(); // { cid, token, channel }
+  }
+
+  // Agent side: exchange a conversation id for this agent's capability. The
+  // server issues it only for a conversation they actually own.
+  async function agentConversationToken(cid) {
+    const resp = await fetch(`/api/conversation/token?cid=${encodeURIComponent(cid)}`);
+    if (!resp.ok) return { error: "not found", status: resp.status };
+    return await resp.json(); // { cid, token, channel, callType, guestName }
+  }
+
+  // Subscribe to a conversation. The token rides on the channel so it can be
+  // re-presented on reconnect — grants belong to the connection, not the name.
+  function openConversation({ channel, token }, handlers = {}) {
+    const ch = window.Realtime.channel(channel, { token });
+    if (handlers.onMessage) ch.on("broadcast", { event: "message" }, ({ payload }) => handlers.onMessage(payload));
+    if (handlers.onSignal) ch.on("broadcast", { event: "signal" }, ({ payload }) => handlers.onSignal(payload));
+    ch.subscribe(handlers.onStatus);
+    return ch;
+  }
+
+  // Send a chat message: persisted first, then broadcast live. Persist-then-
+  // broadcast rather than the reverse, so a message the other side sees is
+  // always one the transcript already has — an agent woken by push must never
+  // find a gap where a delivered message should be.
+  async function sendConversationMessage({ ref, cid, token, sender, body }) {
+    const resp = await fetch("/api/conversation/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, cid, token, sender, body }),
+    });
+    if (!resp.ok) return { error: "send failed", status: resp.status };
+    const saved = await resp.json();
+    await window.Realtime.publish(`conv:${cid}`, "message", saved.message, { token });
+    return saved;
+  }
+
+  // The transcript, so a fresh console shows what the guest already said.
+  async function loadTranscript({ ref, cid, token }) {
+    const qs = new URLSearchParams({ ref, cid, token });
+    const resp = await fetch(`/api/conversation/messages?${qs}`);
+    if (!resp.ok) return { messages: [] };
+    return await resp.json();
+  }
+
+  async function endConversation({ ref, cid, token }) {
+    try {
+      await fetch("/api/conversation/end", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, cid, token }),
+      });
+    } catch (e) { /* best effort: the governor also ages rows out */ }
+  }
+
   function subscribeToInbox(sessionId, onMessage) {
     const channel = window.Realtime.channel(`inbox:${sessionId}`);
     channel
@@ -584,6 +665,12 @@ window.Shared = (() => {
     updatePresence,
     subscribeToInbox,
     sendToInbox,
+    startConversation,
+    agentConversationToken,
+    openConversation,
+    endConversation,
+    sendConversationMessage,
+    loadTranscript,
     sendIM,
     setupCallChannel,
     sendCallSignal,
