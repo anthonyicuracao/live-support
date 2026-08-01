@@ -128,3 +128,50 @@ body.guest {
   body.guest { padding: 0; }
   .guest-user { border-radius: 0; min-height: 100vh; width: 100%; display: flex; flex-direction: column; justify-content: center; }
 }
+
+
+/* ─── Chat dock: guest-only presentation ─────────────────────────────────
+   index.css is shared with the agent console, so anything that moves or
+   resizes the dock has to live here or it moves the console's Chats card too.
+   That is not hypothetical — it happened. */
+
+.im {
+  /* CENTRED, not cornered. The chat is what the visitor came for, so it sits
+     where their attention already is. left+translate rather than margins keeps
+     it correct at any viewport width. */
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Expanded: desktop only, on purpose. A phone is already effectively full
+   width, so "expand" there would be a control that does nothing — worse than
+   not offering it. The breakpoint is what makes the button meaningful. */
+@media (min-width: 48rem) {
+  .im.im-expanded {
+    width: 46rem;
+    max-width: calc(100vw - 4rem);
+  }
+  .im.im-expanded .im-messages {
+    max-height: 60vh;
+    min-height: 24rem;
+  }
+  .im-expand {
+    display: inline-flex;
+  }
+}
+
+/* Hidden below the breakpoint rather than merely inert. */
+.im-expand {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+

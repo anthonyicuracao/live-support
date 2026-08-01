@@ -249,6 +249,33 @@ async function textsOf(page, selector) {
       `tick="${guestTick}"; server says ${serverView}`
     );
 
+    // The AGENT gets the same signal. It is the same question in both
+    // directions — did it land, was it read — and the console had no ticks at
+    // all while the guest did.
+    const agentTick = await tickState(agent);
+    check(
+      "the agent's own reply also shows a delivery state",
+      agentTick === "delivered" || agentTick === "read",
+      `agent tick is "${agentTick}"`
+    );
+
+    // A SECOND visitor message must also go blue. Only the first went through
+    // the path that marks a thread read, so follow-ups stayed grey even though
+    // the agent had read and answered them.
+    await guest.fill(SEL.guestInput, "second message from the visitor");
+    await guest.press(SEL.guestInput, "Enter");
+    await guest.waitForTimeout(2500);
+    const secondTick = await guest.evaluate(() => {
+      const els = [...document.querySelectorAll(".im-msg-out .im-tick")];
+      const last = els[els.length - 1];
+      return last ? (last.className.match(/im-tick--(\w+)/) || [])[1] : "none";
+    });
+    check(
+      "a follow-up visitor message is marked read too, not just the first",
+      secondTick === "read",
+      `second message tick is "${secondTick}" — read marking only ran for the first`
+    );
+
     // ── a message sent while the guest is OFFLINE still arrives ──────────
     //
     // Ron's multi-device case: a phone freezes the tab the moment it goes to

@@ -2266,6 +2266,19 @@
         const li = document.createElement("li");
         li.className = "im-msg " + (m.dir === "out" ? "im-msg-out" : "im-msg-in");
         li.textContent = m.text;
+        // The agent wants this at least as much as the visitor: "did my reply
+        // land, and did they read it" is the same question in both directions,
+        // and an agent with no signal has to guess whether to follow up.
+        if (m.dir === "out") {
+          const tick = document.createElement("span");
+          const state = m.readAt ? "read" : m.deliveredAt ? "delivered" : m.id ? "sent" : "pending";
+          tick.className = "im-tick im-tick--" + state;
+          tick.setAttribute("aria-label", {
+            pending: "sending", sent: "sent", delivered: "delivered", read: "read",
+          }[state]);
+          tick.textContent = state === "pending" ? "🕘" : state === "sent" ? "✓" : "✓✓";
+          li.appendChild(tick);
+        }
         messagesEl.appendChild(li);
       }
       messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -2583,6 +2596,11 @@
         if (!ct) return;
         if (!addMessage(ct, data, "in")) return; // same message via another path
         ct.awaitingReply = true;
+        // Only the FIRST message of a conversation went through deliver() —
+        // which opens the thread and marks it read. Everything after arrived
+        // here and was never marked, so the visitor saw one blue tick and then
+        // grey ones for messages the agent had plainly read and replied to.
+        maybeMarkRead(ct);
         const visible =
           data.cid === activePeerId && !section.classList.contains("im-collapsed");
         if (!visible) ct.unread = (ct.unread || 0) + 1;
