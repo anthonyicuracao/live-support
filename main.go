@@ -687,6 +687,34 @@ func (h *Hub) untrack(channel, key string) {
 	h.syncPresence(channel)
 }
 
+// liveAgentUserIDs reports which agents currently have a console open for a
+// tenant, from live presence state.
+//
+// Guests used to learn this by subscribing to presence:<ref> themselves, which
+// also let them read the whole roster and inject into the channel. They now get
+// it folded into the REST discovery response instead: same information, none of
+// the reach.
+func (h *Hub) liveAgentUserIDs(ref string) map[int64]bool {
+	out := map[int64]bool{}
+	for _, state := range h.presenceUsers("presence:" + ref) {
+		if role, _ := state["role"].(string); role != "auth" {
+			continue
+		}
+		// JSON numbers arrive as float64 through the generic map.
+		switch v := state["user_id"].(type) {
+		case float64:
+			if v > 0 {
+				out[int64(v)] = true
+			}
+		case int64:
+			if v > 0 {
+				out[v] = true
+			}
+		}
+	}
+	return out
+}
+
 func (h *Hub) presenceUsers(channel string) []map[string]interface{} {
 	h.mu.Lock()
 	defer h.mu.Unlock()

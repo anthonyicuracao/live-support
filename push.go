@@ -323,10 +323,14 @@ func userIDForSession(db *sql.DB, ref, sessionID string) int64 {
 func callRingHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	var body struct {
-		Ref        string `json:"ref"`
-		ToSession  string `json:"toSession"`
+		Ref string `json:"ref"`
+		// CID + Token identify BOTH the target agent and the caller's right to
+		// ring them. The guest no longer sends a session id, because we stopped
+		// publishing session ids — that identifier was the capability that
+		// leaked. The conversation record names the agent instead.
+		CID        string `json:"cid"`
+		Token      string `json:"token"`
 		CallID     string `json:"callId"`
-		CallerID   string `json:"callerId"`
 		CallType   string `json:"callType"`
 		CallerName string `json:"callerName"`
 	}
@@ -334,27 +338,21 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, "bad json")
 		return
 	}
-	if body.Ref == "" || body.ToSession == "" || body.CallID == "" {
+	if body.Ref == "" || body.CID == "" {
 		errJSON(w, 400, "missing fields")
 		return
 	}
-	if !dbs.exists(body.Ref) {
-		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
+	// Ringing is a capability, not a lookup: holding the conversation's token is
+	// what entitles this caller to make an agent's phone light up. Without this,
+	// anyone who learned a conversation id could ring its agent at will.
+	db, conv, ok := authConv(body.Ref, body.CID, body.Token)
+	if !ok {
+		errJSON(w, 403, "forbidden")
 		return
 	}
-	db, err := dbs.get(body.Ref)
-	if err != nil {
-		errJSON(w, 400, err.Error())
-		return
-	}
-	userID := userIDForSession(db, body.Ref, body.ToSession)
-	if userID == 0 {
-		// Unknown session (dev sessions, push never enabled) — the guest's own
-		// session-targeted inbox send is the only path.
-		log.Printf("[Ring] ref=%s to=%s… call=%s… no user resolved",
-			body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8))
-		writeJSON(w, 200, map[string]any{"pushed": 0, "queued": false})
-		return
+	userID := conv.AgentUserID
+	if body.CallID == "" {
+		body.CallID = body.CID // chat has no separate call id
 	}
 	// Normalize BEFORE the gate, so the modality check tests the same value the
 	// rest of the path will use. A positive whitelist: anything unrecognised
@@ -393,7 +391,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 	wsPayload, _ := json.Marshal(map[string]any{
 		"type":       "incoming-call",
 		"callId":     body.CallID,
-		"callerId":   body.CallerID,
+		"cid":        body.CID,
 		"callerName": callerName,
 		"callType":   callType,
 	})
@@ -402,7 +400,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 
 	subs := subsForUser(db, body.Ref, userID)
 	log.Printf("[Ring] ref=%s to=%s… call=%s… user=%d consoles=%d subs=%d",
-		body.Ref, safePrefix(body.ToSession, 8), safePrefix(body.CallID, 8), userID, fanout, len(subs))
+		body.Ref, safePrefix(body.CID, 8), safePrefix(body.CallID, 8), userID, fanout, len(subs))
 	if pushEnabled() && len(subs) > 0 {
 		payload, _ := json.Marshal(map[string]any{
 			"type":       "incoming-call",

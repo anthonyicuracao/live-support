@@ -95,8 +95,26 @@ func TestCallRingFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Ringing is now a capability: the guest presents a conversation token
+	// rather than naming the agent's session id, which we stopped publishing.
+	// The conversation is created directly here so the test exercises the ring
+	// gate rather than the whole start-conversation flow.
+	convSecret = "test-connect-secret" // matches newServer's CONNECT_SECRET
+	cid, _ := newConvID()
+	if err := createConversation(db, conversation{
+		CID: cid, Ref: testRef, GuestSession: "guest-sess", AgentUserID: uid,
+		CallType: callTypeAudio, CreatedAt: time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("createConversation: %v", err)
+	}
+	convTok, err := mintConvToken(convSecret, cid, convRoleGuest)
+	if err != nil {
+		t.Fatalf("mintConvToken: %v", err)
+	}
+
 	ring := func() int {
-		body := `{"ref":"` + testRef + `","toSession":"agent-sess","callId":"call-X","callType":"audio","callerName":"Guest Q"}`
+		body := `{"ref":"` + testRef + `","cid":"` + cid + `","token":"` + convTok +
+			`","callId":"call-X","callType":"audio","callerName":"Guest Q"}`
 		req := httptest.NewRequest("POST", "/api/call/ring", strings.NewReader(body))
 		w := httptest.NewRecorder()
 		callRingHandler(w, req)

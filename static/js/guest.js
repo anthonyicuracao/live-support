@@ -85,7 +85,9 @@
   // eligible agent is available. Consumed after firing.
   let autoCallType = (() => {
     const v = new URLSearchParams(window.location.search).get("auto");
-    return v === "audio" || v === "video" ? v : null;
+    // `chat` joins audio/video as a first-class entry. Additive: an existing
+    // ?auto=audio or ?auto=video invite link keeps working unchanged.
+    return v === "audio" || v === "video" || v === "chat" ? v : null;
   })();
 
   // ─── Show main sections ────────────────────────────────────────────────
@@ -116,35 +118,23 @@
   try { selectedMicId = localStorage.getItem(STORAGE_MIC) || ""; } catch (e) {}
   try { selectedCamId = localStorage.getItem(STORAGE_CAM) || ""; } catch (e) {}
 
-  // ─── Presence + durable-agent discovery ────────────────────────────────
-  // Callable agents come from TWO sources, merged:
-  //  - live WS presence: agents with the console open right now (instant), and
-  //  - GET /api/agents/available: agents who went Available and then closed
-  //    the tab / quit the browser — still reachable via Web Push until they
-  //    Pause or log out. Live presence wins on session_id collisions.
-  let presenceAgents = [];
+  // ─── Durable-agent discovery ───────────────────────────────────────────
+  // Callable agents still come from two sources — consoles open right now, and
+  // agents who went Available then closed the tab (reachable via Web Push until
+  // they Pause or log out) — but the merge that used to happen HERE now happens
+  // on the server.
+  //
+  // A guest used to subscribe to presence:<ref> and union it with the REST
+  // roster itself. It cannot any more, and should never have been able to: ref
+  // is the tenant's own domain, so that channel handed anyone who could guess it
+  // the full agent roster — and the ability to broadcast into it. The server
+  // folds live consoles into /api/agents/available instead (each row carries
+  // `live`), so the guest sees exactly the same set with none of the reach.
   let restAgents = [];
   function mergeAgents() {
-    // Dedupe by user_id — the stable identity. A live agent's presence
-    // session_id differs from their durable record's (session ids churn across
-    // reopens), so deduping by session_id would double-list the same agent.
-    // Live presence wins; tag each so selection can prefer a connected agent
-    // over a push-only (Offline·Reachable) one.
-    const liveIds = new Set(presenceAgents.map((u) => u.user_id));
-    const live = presenceAgents.map((u) => ({ ...u, _live: true }));
-    const pushOnly = restAgents
-      .filter((a) => !liveIds.has(a.user_id))
-      .map((a) => ({ ...a, _live: false }));
-    authUsers = live.concat(pushOnly);
+    authUsers = restAgents;
     if (state === "ready") updateCallButtons();
   }
-  presenceChannel = S.joinPresenceChannel(params.ref, presenceData, (users) => {
-    // Only track auth users with same ref who are available and have mic
-    presenceAgents = users.filter(
-      (u) => u.role === "auth" && u.status === "available" && u.has_mic
-    );
-    mergeAgents();
-  });
   async function refreshRestAgents() {
     try {
       const r = await fetch(
@@ -152,12 +142,15 @@
       );
       if (r.ok) restAgents = (await r.json()).agents || [];
     } catch (e) {
-      /* keep the last list — live presence still works */
+      /* keep the last list rather than blanking the UI on one bad fetch */
     }
     mergeAgents();
   }
   refreshRestAgents();
-  setInterval(refreshRestAgents, 15000);
+  // Polled rather than pushed. Tightened from 15s because this is now the ONLY
+  // source of liveness for the guest, where live presence used to make an agent
+  // appear instantly.
+  setInterval(refreshRestAgents, 6000);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshRestAgents();
   });
@@ -262,8 +255,11 @@
     const videoBtn = document.querySelector(".video-call-button");
     const noAgentsMsg = document.querySelector(".no-agents-message");
 
+    const chatBtn = document.querySelector(".chat-button");
     const anyAvailable = authUsers.length > 0;
-    const anyHasCamera = authUsers.some((u) => u.has_camera);
+    const anyHasCamera = authUsers.some((u) => u.modes && u.modes.video);
+    const anyChat = authUsers.some((u) => u.modes && u.modes.chat);
+    const anyAudio = authUsers.some((u) => u.modes && u.modes.audio);
 
     S.showSection(".call");
     const cancelBtn = document.querySelector(".send-message .cancel-button");
@@ -271,6 +267,7 @@
       if (noAgentsMsg) noAgentsMsg.style.display = "";
       if (audioBtn) audioBtn.style.display = "none";
       if (videoBtn) videoBtn.style.display = "none";
+      if (chatBtn) chatBtn.style.display = "none";
       // Show the message form inline; no cancel since there's nothing to return to.
       const nameInput = document.querySelector(".send-message-form-name");
       const contactInput = document.querySelector(".send-message-form-contact");
@@ -284,10 +281,14 @@
       S.showSection(".send-message");
     } else {
       if (noAgentsMsg) noAgentsMsg.style.display = "none";
-      if (audioBtn) audioBtn.style.display = "";
+      // Each modality is shown but disabled when nobody is offering it, rather
+      // than hidden: a control that vanishes reads as "broken", one that is
+      // greyed out reads as "not right now".
+      if (audioBtn) { audioBtn.style.display = ""; audioBtn.disabled = !anyAudio; }
       // Keep Video visible but disabled when no video-capable agent is online;
       // the .no-video class on the card reveals a short explanatory hint.
       if (videoBtn) { videoBtn.style.display = ""; videoBtn.disabled = !anyHasCamera; }
+      if (chatBtn) { chatBtn.style.display = ""; chatBtn.disabled = !anyChat; }
       if (cancelBtn) cancelBtn.style.display = "";
       S.hideSection(".send-message");
     }
@@ -298,12 +299,16 @@
     if (autoCallType && state === "ready") {
       const audioBtnEl = document.querySelector(".audio-call-button");
       const videoBtnEl = document.querySelector(".video-call-button");
-      if (autoCallType === "audio" && anyAvailable) {
+      const chatBtnEl = document.querySelector(".chat-button");
+      if (autoCallType === "audio" && anyAudio) {
         autoCallType = null;
         audioBtnEl?.click();
       } else if (autoCallType === "video" && anyHasCamera) {
         autoCallType = null;
         videoBtnEl?.click();
+      } else if (autoCallType === "chat" && anyChat) {
+        autoCallType = null;
+        chatBtnEl?.click();
       }
     }
   }
@@ -315,7 +320,21 @@
       updateCallButtons();
       return;
     }
-    initiateCall(target.session_id, target.name, "audio", target.picture);
+    initiateCall(target, "audio");
+  });
+
+  // ─── Chat button ───────────────────────────────────────────────────────
+  // Chat is now a peer of audio and video, not something only an agent could
+  // start. The guest picks a target from the same roster and the server mints
+  // the conversation, so there is no longer any need to have been messaged
+  // first in order to reply.
+  document.querySelector(".chat-button")?.addEventListener("click", async () => {
+    const target = pickForModality("chat");
+    if (!target) {
+      updateCallButtons();
+      return;
+    }
+    await startChat(target);
   });
 
   // ─── Video call button ─────────────────────────────────────────────────
@@ -325,7 +344,7 @@
       updateCallButtons();
       return;
     }
-    initiateCall(target.session_id, target.name, "video", target.picture);
+    initiateCall(target, "video");
   });
 
   // ─── Find longest-waiting available auth user ──────────────────────────
@@ -333,21 +352,80 @@
   // so a call rings an agent who's actually at the console rather than a ghost.
   // Only fall back to push-only when no live agent qualifies.
   function pickLongestWaiting(pool) {
-    const live = pool.filter((u) => u._live);
+    // `live` is now reported by the server (it used to be derived from the
+    // presence channel the guest subscribed to).
+    const live = pool.filter((u) => u.live);
     const pick = live.length ? live : pool;
     return pick.sort((a, b) => new Date(a.online_since) - new Date(b.online_since))[0] || null;
   }
+  // Selection is per MODALITY: an agent taking chat but not video must not be
+  // picked for a video call. modes is the agent's stated intent; has_mic /
+  // has_camera are kept as the compatibility view of the same thing.
+  function pickForModality(modality) {
+    return pickLongestWaiting(authUsers.filter((u) => u.modes && u.modes[modality]));
+  }
   function getLongestWaitingAuthUser() {
-    return pickLongestWaiting(authUsers.filter((u) => u.has_mic));
+    return pickForModality("audio");
   }
 
   function getLongestWaitingAuthUserWithCamera() {
-    return pickLongestWaiting(authUsers.filter((u) => u.has_mic && u.has_camera));
+    return pickForModality("video");
+  }
+
+  // ─── Conversation establishment ────────────────────────────────────────
+  // Every contact with an agent — chat, audio or video — now runs over a
+  // private conversation channel. The guest holds a capability token for that
+  // one conversation and nothing else; knowing another conversation's id would
+  // not help, and no id is published anyway.
+  //
+  // The server decides whether the conversation may exist at all (agent
+  // available, takes this modality, has chat capacity), so a stale roster
+  // fails here with a clear reason instead of ringing a void.
+  let currentConv = null; // { cid, token, channel }
+
+  async function openConversationWith(target, callType) {
+    const started = await S.startConversation({
+      ref: params.ref,
+      agentUserId: target.user_id,
+      callType,
+      guestSession: sessionId,
+      guestName: params.name,
+    });
+    if (started.error) {
+      // 409 = the agent stopped being available between the roster refresh and
+      // the click; 429 = they are at chat capacity. Both are ordinary races,
+      // not failures worth alarming the guest about — refresh and re-render.
+      refreshRestAgents();
+      return { error: started.error, status: started.status };
+    }
+    currentConv = { cid: started.cid, token: started.token, channel: started.channel };
+    return currentConv;
+  }
+
+  // ─── Start a chat (guest-initiated) ────────────────────────────────────
+  async function startChat(target) {
+    if (state !== "ready") return;
+    const conv = await openConversationWith(target, "chat");
+    if (conv.error) {
+      updateCallButtons();
+      return;
+    }
+    // Subscribe BEFORE ringing, so a fast agent's first message cannot arrive
+    // before we are listening.
+    currentCallChannel = S.openConversation(conv, {
+      onMessage: (m) => IM.receive(m),
+    });
+    IM.open({ cid: conv.cid, token: conv.token, name: target.name, picture: target.picture });
+    // Same ring path as a call: a chat must be able to wake a closed console,
+    // which is exactly what the old agent-initiated-only chat could not do.
+    await ringPush(conv.cid, "chat");
   }
 
   // ─── Initiate call (guest → auth) ──────────────────────────────────────
-  async function initiateCall(targetSessionId, targetName, callType, targetPicture) {
+  async function initiateCall(target, callType) {
     if (state !== "ready") return;
+    const targetName = target.name;
+    const targetPicture = target.picture || "";
 
     // Acquire the mic (and camera for video) NOW, from this click's gesture —
     // the only permission prompt the guest ever sees, at the moment it makes
@@ -361,9 +439,24 @@
       return;
     }
 
+    // Establish the private conversation FIRST. It is both the permission check
+    // (the server refuses a modality the agent has not enabled) and the channel
+    // the whole call will signal over, so there is nothing to tear down if the
+    // agent turns out to be unavailable.
+    const conv = await openConversationWith(target, callType);
+    if (conv.error) {
+      updateCallButtons();
+      showMessageForm(
+        conv.status === 429
+          ? "That agent is at capacity right now. Please leave a message."
+          : "That agent just became unavailable. Please leave a message."
+      );
+      return;
+    }
+
     state = "calling";
     callRole = "caller";
-    outgoingCall = { targetSessionId, targetName, callType, targetPicture: targetPicture || "" };
+    outgoingCall = { targetName, callType, targetPicture };
     currentCallId = S.generateId();
 
     // Update presence + session status
@@ -377,13 +470,20 @@
       ref: params.ref,
       callerSessionId: sessionId,
       callerName: params.name,
-      calleeSessionId: targetSessionId,
+      calleeSessionId: "",
       calleeName: targetName,
       callType,
     });
 
-    // Subscribe to call channel
-    currentCallChannel = S.setupCallChannel(currentCallId, handleCallSignal);
+    // Signal over the CONVERSATION channel. Previously this was call:<callId>,
+    // whose name was guessable from a call id and which the hub let anyone
+    // subscribe to — so a third party could have followed, or forged, the
+    // WebRTC negotiation. The conversation channel is random-keyed and
+    // token-gated, which is what makes caller/callee privacy actually hold.
+    currentCallChannel = S.openConversation(conv, {
+      onSignal: handleCallSignal,
+      onMessage: (m) => IM.receive(m),
+    });
 
     // Show outgoing call UI
     const outH1 = document.querySelector(".call-outgoing h1");
@@ -391,24 +491,17 @@
     S.hideSection(".call");
     S.showSection(".call-outgoing");
 
-    // Notify target — instant path when the agent's tab is open…
-    await S.sendToInbox(targetSessionId, {
-      type: "incoming-call",
-      callId: currentCallId,
-      callerId: sessionId,
-      callerName: params.name,
-      callType,
-    });
-    // …and a server-side Web Push so a backgrounded/closed agent tab is woken
-    // and rung (no-op when the agent has no push subscription).
-    const ring = await ringPush(targetSessionId, currentCallId, callType);
+    // One ring path for every surface. The server resolves the agent from the
+    // conversation, fans out to their live consoles over WS, queues an invite
+    // for a console that opens later, and sends Web Push to wake a closed one —
+    // so the guest no longer needs to know the agent's session id, which is the
+    // identifier we stopped publishing.
+    const ring = await ringPush(conv.cid, callType);
 
-    // Fail fast if the agent is genuinely unreachable: the server couldn't
-    // queue the ring for any available agent AND no live tab holds the
-    // targeted session. Don't make the guest sit through a 30s dead ring.
-    const liveTarget = presenceAgents.some(
-      (u) => u.session_id === targetSessionId
-    );
+    // Fail fast if the agent is genuinely unreachable, rather than making the
+    // guest sit through a 30s dead ring. `live` comes from the server-side
+    // discovery merge now that the guest cannot read presence itself.
+    const liveTarget = !!target.live;
     if (!ring.queued && !ring.pushed && !liveTarget) {
       await S.sendCallSignal(currentCallChannel, { type: "call-cancelled" });
       await S.updateCallRecord(currentCallId, { status: "timeout" });
@@ -438,16 +531,19 @@
   // Returns the server's ring verdict: queued = the ring reached an available
   // agent's invite queue + live consoles (WS fan-out), pushed = how many push
   // subscriptions were also alerted. Both false/0 = nobody can answer.
-  async function ringPush(targetSessionId, callId, callType) {
+  async function ringPush(cid, callType) {
     try {
       const r = await fetch("/api/call/ring", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ref: params.ref,
-          toSession: targetSessionId,
-          callId,
-          callerId: sessionId,
+          // The conversation identifies the agent, so the guest no longer sends
+          // (or knows) their session id. The server resolves the target from
+          // the conversation record it created.
+          cid,
+          token: currentConv ? currentConv.token : "",
+          callId: currentCallId,
           callType,
           callerName: params.name,
         }),
@@ -944,13 +1040,15 @@
     const dockHeader = section?.querySelector(".im-dock-header");
     const dockUnread = section?.querySelector(".im-dock-unread");
 
-    // adminId -> { id, name, messages:[{dir,text,ts}] }
+    // Keyed by conversation id now, not by an agent's session id — the whole
+    // point of the change: a conversation is the unit of privacy.
     const threads = new Map();
     let activeAdminId = null;
+    let conv = null; // { cid, token }
     let unread = 0;
 
     if (!section) {
-      return { receive() {} };
+      return { receive() {}, open() {} };
     }
 
     // Click the header bar to minimize / expand, like Facebook chat.
@@ -1017,17 +1115,48 @@
       renderMessages();
     }
 
+    // open() is what makes chat guest-initiated. The dock used to be openable
+    // only by an inbound agent message — "can't message an admin who never
+    // messaged us" — because a guest had no way to address an agent that was
+    // not also a way for anyone else to. A conversation capability replaces
+    // that restriction with an actual permission.
+    function open({ cid, token, name, picture }) {
+      conv = { cid, token };
+      activeAdminId = cid;
+      if (!threads.has(cid)) {
+        threads.set(cid, { id: cid, name: name || "Agent", picture: picture || "", messages: [] });
+      }
+      S.showSection(".im");
+      section.classList.remove("im-collapsed");
+      renderMessages();
+      inputEl?.focus();
+      // Show anything already said — an agent may have replied before this tab
+      // subscribed, and a transcript that starts blank is a lie about history.
+      S.loadTranscript({ ref: params.ref, cid, token }).then((res) => {
+        const t = threads.get(cid);
+        if (!t || !res.messages || !res.messages.length) return;
+        t.messages = res.messages.map((m) => ({
+          dir: m.sender === "guest" ? "out" : "in",
+          text: m.body,
+          ts: m.created_at * 1000,
+        }));
+        renderMessages();
+      });
+    }
+
     async function send(text) {
-      if (!activeAdminId || !text) return;
-      const t = threads.get(activeAdminId);
-      if (!t) return; // can't message an admin who never messaged us
+      if (!conv || !text) return;
+      const t = threads.get(conv.cid);
+      if (!t) return;
       t.messages.push({ dir: "out", text, ts: Date.now() });
       renderMessages();
-      await S.sendIM(activeAdminId, {
-        fromId: sessionId,
-        fromName: params.name,
-        fromRole: "guest",
-        text,
+      // Persisted and broadcast by the shared helper, in that order, so what
+      // the agent sees is always already in the transcript.
+      await S.sendConversationMessage({
+        ref: params.ref,
+        cid: conv.cid,
+        token: conv.token,
+        body: text,
       });
     }
 
@@ -1039,7 +1168,7 @@
       send(text);
     });
 
-    return { receive };
+    return { receive, open };
   })();
 
   // ─── Helpers ──────────────────────────────────────────────────────────

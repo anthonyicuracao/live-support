@@ -333,9 +333,9 @@ func (a *authApp) conversationEndHandler(w http.ResponseWriter, r *http.Request)
 // authConv resolves (and authorises) a conversation from a capability token.
 // Every transcript endpoint goes through it, so there is exactly one place that
 // decides whether a caller may touch a conversation's contents.
-func (a *authApp) authConv(ref, cid, token string) (*sql.DB, conversation, bool) {
+func authConv(ref, cid, token string) (*sql.DB, conversation, bool) {
 	var zero conversation
-	t, err := parseConvToken(a.ssoSecret, token)
+	t, err := parseConvToken(convSecret, token)
 	if err != nil || cid == "" || t.CID != cid {
 		return nil, zero, false
 	}
@@ -372,7 +372,7 @@ func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	t, terr := parseConvToken(a.ssoSecret, body.Token)
-	db, _, ok := a.authConv(body.Ref, body.CID, body.Token)
+	db, _, ok := authConv(body.Ref, body.CID, body.Token)
 	if terr != nil || !ok {
 		errJSON(w, 403, "forbidden")
 		return
@@ -406,7 +406,7 @@ func (a *authApp) conversationMessageHandler(w http.ResponseWriter, r *http.Requ
 func (a *authApp) conversationMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	q := r.URL.Query()
-	db, _, ok := a.authConv(q.Get("ref"), q.Get("cid"), q.Get("token"))
+	db, _, ok := authConv(q.Get("ref"), q.Get("cid"), q.Get("token"))
 	if !ok {
 		errJSON(w, 403, "forbidden")
 		return

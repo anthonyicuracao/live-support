@@ -254,36 +254,52 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, err.Error())
 		return
 	}
+	// Live consoles, folded in server-side. Guests previously merged this
+	// themselves by subscribing to presence:<ref>; they no longer may, so an
+	// agent who is live but has never enabled push must be surfaced here or
+	// they would silently stop being discoverable.
+	live := hub.liveAgentUserIDs(ref)
+
 	// JOIN users so an orphaned availability row (deleted account) or a
-	// deactivated agent can never surface as a callable ghost — only a real,
-	// active user with a push subscription is discoverable.
-	query := `SELECT DISTINCT a.user_id, a.session_id, a.display_name, a.has_camera, a.picture, a.online_since,
-		        a.chat_ok, a.audio_ok, a.video_ok
+	// deactivated agent can never surface as a callable ghost. Reachability is
+	// then either a push subscription OR a live console, evaluated per row.
+	query := `SELECT DISTINCT a.user_id, a.display_name, a.has_camera, a.picture, a.online_since,
+		        a.chat_ok, a.audio_ok, a.video_ok, a.updated_at,
+		        (SELECT COUNT(*) FROM push_subscriptions p WHERE p.user_id = a.user_id) AS pushes
 		 FROM agent_availability a
-		 JOIN push_subscriptions p ON p.user_id = a.user_id
 		 JOIN users u ON u.id = a.user_id AND u.active = 1
 		 WHERE a.available = 1`
-	var rows *sql.Rows
-	if window := discoveryFreshness(); window > 0 {
-		// updated_at is RFC3339 UTC — lexically comparable. Hide records whose
-		// console hasn't been seen within the window (stale ghosts).
-		cutoff := time.Now().UTC().Add(-window).Format(time.RFC3339)
-		rows, err = db.Query(query+` AND a.updated_at > ?`, cutoff)
-	} else {
-		rows, err = db.Query(query)
-	}
+	rows, err := db.Query(query)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"agents": []any{}})
 		return
 	}
 	defer rows.Close()
+
+	// updated_at is RFC3339 UTC, so lexically comparable. Only ever applied to
+	// a NOT-live agent: a live console is proof of reachability, and ageing one
+	// out on staleness is exactly the ghost this window exists to avoid.
+	var cutoff string
+	if window := discoveryFreshness(); window > 0 {
+		cutoff = time.Now().UTC().Add(-window).Format(time.RFC3339)
+	}
+
 	agents := []map[string]any{}
 	for rows.Next() {
 		var userID int64
-		var sessionID, displayName, picture, onlineSince string
-		var hasCamera, chatOK, audioOK, videoOK int
-		if err := rows.Scan(&userID, &sessionID, &displayName, &hasCamera, &picture, &onlineSince,
-			&chatOK, &audioOK, &videoOK); err == nil {
+		var displayName, picture, onlineSince, updatedAt string
+		var hasCamera, chatOK, audioOK, videoOK, pushes int
+		if err := rows.Scan(&userID, &displayName, &hasCamera, &picture, &onlineSince,
+			&chatOK, &audioOK, &videoOK, &updatedAt, &pushes); err == nil {
+			isLive := live[userID]
+			if !isLive {
+				if pushes == 0 {
+					continue // neither live nor push-reachable: not callable
+				}
+				if cutoff != "" && updatedAt <= cutoff {
+					continue // stale ghost
+				}
+			}
 			agents = append(agents, map[string]any{
 				// user_id is the address a guest uses to REQUEST a conversation
 				// (POST /api/conversation/start). Publishing it is safe because
@@ -312,6 +328,9 @@ func agentsAvailableHandler(w http.ResponseWriter, r *http.Request) {
 				},
 				"picture":      picture,
 				"online_since": onlineSince,
+				// Lets the guest prefer a connected agent over a push-only one,
+				// which the client used to work out from presence itself.
+				"live": isLive,
 			})
 		}
 	}
