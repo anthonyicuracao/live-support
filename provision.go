@@ -39,7 +39,12 @@ func (a *authApp) provision(w http.ResponseWriter, r *http.Request) {
 	}
 	ref := sec.Ref
 
-	db := tenantDB(ref)
+	// Provisioning, so it creates: the token above was signed with the shared
+	// secret, which is the same authority /sso rests on. Left as tenantDB when
+	// that became existing-only, this endpoint quietly lost the ability to
+	// provision a BRAND-NEW tenant — the one thing it is for. The tests did not
+	// catch it because their harness creates the ref up front.
+	db := tenantDBProvision(ref)
 	if db == nil {
 		http.Error(w, "invalid tenant ref", http.StatusBadRequest)
 		return

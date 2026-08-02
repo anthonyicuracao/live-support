@@ -33,6 +33,10 @@ var (
 
 // newServer boots the auth app against a fresh temp data dir and returns the
 // test server plus the tenant DB for testRef (for direct assertions).
+// theApp is the app the current test server is running, so helpers can reach
+// tenant bootstrap without every test threading it through.
+var theApp *authApp
+
 func newServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	t.Helper()
 	dir := t.TempDir()
@@ -53,6 +57,7 @@ func newServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	if err != nil {
 		t.Fatalf("newAuthApp: %v", err)
 	}
+	theApp = a
 	mux := http.NewServeMux()
 	a.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -116,7 +121,14 @@ func csrfFrom(t *testing.T, body string) string {
 func loginAdmin(t *testing.T, srv *httptest.Server) *http.Client {
 	t.Helper()
 	c := newClient(t)
-	_, page := getBody(t, c, wr(srv, "/login")) // GET also bootstraps the tenant admin
+	// Seeded here rather than by a side-effect of rendering the login page.
+	// That side-effect is gone — it is what let any anonymous GET mint a tenant
+	// with a known-password admin. Doing it in the helper that actually wants
+	// an admin also keeps it out of tests that count admins.
+	if db, err := dbs.get(testRef); err == nil {
+		theApp.bootstrapTenant(db, testRef)
+	}
+	_, page := getBody(t, c, wr(srv, "/login"))
 	_, after := postForm(t, c, wr(srv, "/login"), url.Values{
 		"csrf": {csrfFrom(t, page)}, "username": {"admin"}, "password": {initialPW},
 	})
