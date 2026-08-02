@@ -204,11 +204,38 @@ body.guest {
     box-shadow: none;
     border-bottom: 1px solid var(--grey);
   }
+  /* Anchored to the bottom once a conversation is open: the card takes the
+     window height, the controls stay at the top, and `margin-top: auto` puts
+     the whole distance between them. The composer then sits where the eye
+     already expects a chat composer to be, and the transcript grows upward
+     into the space instead of the card ending in the middle of the screen.
+     Only when a chat exists — otherwise this would be a tall, empty card. */
+  body.guest-chat-open {
+    align-items: stretch;
+  }
+  body.guest-chat-open .guest-user {
+    display: flex;
+    flex-direction: column;
+    margin: 0 auto;
+  }
+  body.guest-chat-open .guest-user > .im {
+    margin-top: auto;
+  }
   /* Grows with the window instead of sitting at a fixed 18rem. The floor
      matters as much as the ceiling: a short window must not collapse the
      transcript to a couple of lines. */
   .guest-user > .im .im-thread {
     height: clamp(18rem, calc(100vh - 30rem), 40rem);
+  }
+  /* The thread keeps its clamped height rather than flex-growing. Growing and
+     bottom-anchoring are mutually exclusive: `margin-top: auto` consumes the
+     free space, so there is none left to grow into. Asking for both gave a
+     SHORTER chat than asking for neither - 271px, then 141px once the dock
+     itself became a flex column and its children started shrinking too.
+     Anchoring is what Ron asked for, so the height comes from the clamp and
+     the dock is left as an ordinary block. */
+  body.guest-chat-open .guest-user > .im .im-thread {
+    flex-shrink: 0;
   }
   .guest-user > .im .im-messages {
     max-height: none;

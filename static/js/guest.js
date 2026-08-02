@@ -14,6 +14,14 @@
   if (greetingH1) greetingH1.textContent = `Hello, ${params.name}!`;
 
   S.hideAllSections();
+  // Marks the card as holding a conversation. Desktop uses it to give the card
+  // the full window height and sit the chat at the bottom of it; without a
+  // signal the card would either be tall and empty before a chat starts, or
+  // stay short and leave the chat floating mid-screen.
+  function showChat() {
+    S.showSection(".im");
+    document.body.classList.add("guest-chat-open");
+  }
   S.showSection(".greeting");
 
   // ─── Guard: no ref ─────────────────────────────────────────────────────
@@ -1203,7 +1211,7 @@
                         upToId: data.id, kind: "delivered" });
         maybeMarkRead(ct);
         activeAdminId = data.cid;
-        S.showSection(".im");
+        showChat();
         const collapsed = section.classList.contains("im-collapsed");
         if (collapsed) {
           unread += 1;
@@ -1230,7 +1238,7 @@
       // Reveal the dock. On first appearance, open it; if the guest had
       // minimized it, leave it collapsed and just badge the unread count.
       const firstShow = section.style.display === "none";
-      S.showSection(".im");
+      showChat();
       if (firstShow) section.classList.remove("im-collapsed");
       if (section.classList.contains("im-collapsed")) {
         unread += 1;
@@ -1253,7 +1261,7 @@
       if (!threads.has(cid)) {
         threads.set(cid, { id: cid, name: name || "Agent", picture: picture || "", messages: [] });
       }
-      S.showSection(".im");
+      showChat();
       section.classList.remove("im-collapsed");
       renderMessages();
       inputEl?.focus();
