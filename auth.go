@@ -1283,9 +1283,35 @@ func refFromRequest(r *http.Request) string {
 	return ref
 }
 
-// tenantDB resolves the ref to its tenant DB, returning nil if the ref is
-// missing or invalid.
+// tenantDB resolves the ref to an EXISTING tenant DB, returning nil if the ref
+// is missing, invalid, or names a tenant nobody has provisioned.
+//
+// It used to create on demand, which meant any unauthenticated GET could mint a
+// tenant: rendering the login form for ?ref=anything wrote a database and
+// seeded an admin into it. With ADMIN_INITIAL_PASSWORD configured — as it is on
+// the managed appliance — that admin had a known password, so an invented ref
+// was a working account. The junk databases on disk (does-not-exist-test,
+// instantaiguru, and two case variants) are all artefacts of it.
+//
+// It also made the casing bug silent rather than loud: a mis-cased ref found no
+// tenant, created an empty one, and reported a failed password instead of an
+// unknown domain.
 func tenantDB(ref string) *sql.DB {
+	if ref == "" || safeRefFile(ref) == "" {
+		return nil
+	}
+	db, err := dbs.getExisting(ref)
+	if err != nil {
+		return nil
+	}
+	return db
+}
+
+// tenantDBProvision resolves the ref, CREATING the tenant if it does not exist.
+// Only for callers that have already proven the tenant is one we should serve —
+// today that is the SSO handler, which verifies a token signed with the shared
+// platform secret before it is reached.
+func tenantDBProvision(ref string) *sql.DB {
 	if ref == "" || safeRefFile(ref) == "" {
 		return nil
 	}
@@ -1443,7 +1469,10 @@ func (a *authApp) sso(w http.ResponseWriter, r *http.Request) {
 	}
 	ref, username, role := sec.Ref, sec.User, sec.Role
 	now := time.Now().Unix()
-	db := tenantDB(ref)
+	// Provisioning point: the token above was signed with the shared platform
+	// secret, so this ref is one the platform vouches for. A brand-new tenant
+	// is born here, on an admin's first SSO from user-admin, and nowhere else.
+	db := tenantDBProvision(ref)
 	if db == nil {
 		failed()
 		return

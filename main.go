@@ -386,7 +386,14 @@ var refSanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
 
 // safeRefFile converts a ref into a safe filename, or "" if invalid.
 func safeRefFile(ref string) string {
-	s := refSanitizer.ReplaceAllString(ref, "_")
+	// Lower-cased first: a ref is a domain, and domains are case-insensitive.
+	// Treating them otherwise made "instantAIguru.com" a DIFFERENT tenant from
+	// "instantaiguru.com" — a separate database, with none of the real users in
+	// it — so a mis-typed capital turned a correct password into a failed
+	// login. Ron hit exactly that. Three case-variant databases had quietly
+	// accumulated on the appliance before anyone noticed.
+	s := strings.ToLower(ref)
+	s = refSanitizer.ReplaceAllString(s, "_")
 	s = strings.Trim(s, ".") // no hidden files / ".." traversal
 	if s == "" || len(s) > 200 {
 		return ""
@@ -404,10 +411,89 @@ func newDBPool(dataDir string) (*dbPool, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
+	reconcileRefCase(dataDir)
 	return &dbPool{dataDir: dataDir, dbs: make(map[string]*sql.DB)}, nil
 }
 
-// get returns the DB for ref, opening (and creating) it if needed.
+// provisionRefs creates the tenants named in PROVISION_REFS (comma-separated)
+// at startup.
+//
+// Tenants are otherwise born only from a valid SSO token, which cannot be
+// forged without the shared secret. That is the right default, but it leaves
+// no way to stand a tenant up on a self-hosted box that is not driven by the
+// platform, and no way for the test harness to make one. Setting an env var
+// requires access to the machine, which is authority enough.
+func provisionRefs(list string) {
+	for _, raw := range strings.Split(list, ",") {
+		ref := strings.TrimSpace(raw)
+		if ref == "" {
+			continue
+		}
+		if _, err := dbs.get(ref); err != nil {
+			log.Printf("[DB] could not provision %q: %v", ref, err)
+			continue
+		}
+		log.Printf("[DB] provisioned tenant %q (PROVISION_REFS)", safeRefFile(ref))
+	}
+}
+
+// reconcileRefCase renames mixed-case tenant files to their lower-case name,
+// so refs written before normalisation stay reachable afterwards.
+//
+// Only when the lower-case name is free. If both exist they are two real
+// databases with two real histories, and picking one would silently discard
+// the other — so it says so and leaves them alone. That case needs a human who
+// knows which is the live tenant.
+//
+// Non-fatal throughout: a tenant that cannot be renamed must not take the whole
+// appliance down with it. Losing one tenant's routing is bad; refusing to start
+// takes every tenant offline, which is how a unique index once did exactly that.
+func reconcileRefCase(dataDir string) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".db") {
+			continue // -wal and -shm ride along with their .db below
+		}
+		lower := strings.ToLower(name)
+		if lower == name {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dataDir, lower)); err == nil {
+			log.Printf("[DB] %q and %q both exist — leaving both; "+
+				"refs now resolve to %q, so move the other aside if it is the live one", name, lower, lower)
+			continue
+		}
+		// The journal files must travel with the database or SQLite sees a
+		// truncated history on the next open.
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			from := filepath.Join(dataDir, name+suffix)
+			if _, err := os.Stat(from); err != nil {
+				continue
+			}
+			if err := os.Rename(from, filepath.Join(dataDir, lower+suffix)); err != nil {
+				log.Printf("[DB] could not rename %q: %v", name+suffix, err)
+			}
+		}
+		log.Printf("[DB] renamed %q to %q (refs are case-insensitive)", name, lower)
+	}
+}
+
+// getExisting opens a tenant DB only if it is already on disk, so a ref nobody
+// provisioned resolves to nothing instead of quietly becoming a new tenant.
+func (p *dbPool) getExisting(ref string) (*sql.DB, error) {
+	if !p.exists(ref) {
+		return nil, fmt.Errorf("unknown ref")
+	}
+	return p.get(ref)
+}
+
+// get returns the DB for ref, opening (and CREATING) it if needed. Callers must
+// have established that the ref is one this appliance should serve — see
+// tenantDB vs tenantDBProvision.
 func (p *dbPool) get(ref string) (*sql.DB, error) {
 	key := safeRefFile(ref)
 	if key == "" {
@@ -1945,6 +2031,7 @@ func main() {
 	if err != nil {
 		log.Fatal("init db pool:", err)
 	}
+	provisionRefs(os.Getenv("PROVISION_REFS"))
 	hub = newHub()
 
 	mux := http.NewServeMux()

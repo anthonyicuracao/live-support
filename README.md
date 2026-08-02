@@ -111,7 +111,11 @@ Agents authenticate against the server itself — no external identity provider,
 
 **Sign-in flow** — agents visit `/login?ref=<tenant>` (or plain `/login` and type the domain). On success the dashboard loads and `auth.js` reads the identity from `/api/me`: `{ ref, name, email, isAdmin }`. Roles are `admin` (full dashboard, user management) and `agent`.
 
-**First run (per tenant)** — the first time a tenant's login page is used, an initial admin account is created from `ADMIN_USERNAME` / `ADMIN_INITIAL_PASSWORD`. If no password is configured, a temporary one is generated and printed to the server log; it must be changed on first login.
+**Tenants are created deliberately, never by being asked for.** A tenant comes into existence in exactly two ways: an admin arriving on a valid SSO link (the token is signed with the shared platform secret and cannot be forged), or a ref listed in `PROVISION_REFS` at startup. Visiting `/login?ref=…` for a ref nobody provisioned shows the form and creates nothing.
+
+Refs are **case-insensitive**, since they are domains. `Example.com` and `example.com` are the same tenant. Mixed-case database files created before this are renamed to lower case at startup, unless a lower-case file already exists — then both are left alone and the collision is logged, because choosing one would discard the other's history.
+
+**First run (per tenant)** — the first time an existing tenant's login page is used, an initial admin account is created from `ADMIN_USERNAME` / `ADMIN_INITIAL_PASSWORD`. If no password is configured, a temporary one is generated and printed to the server log; it must be changed on first login.
 
 **Platform SSO (optional)** — an external platform that knows the deployment's `CONNECT_SECRET` can mint short-lived signed links that sign a user straight into the dashboard, no second login:
 
@@ -206,6 +210,7 @@ All settings come from environment variables or a `.env` file beside the binary.
 | `DATA_DIR` | `data` | Directory holding one SQLite database per tenant ref (the systemd unit sets it to `/var/lib/live-support`). |
 | `ADMIN_USERNAME` | `admin` | Username of the initial admin account created the first time a tenant is used. See §1.7. |
 | `ADMIN_INITIAL_PASSWORD` | *(empty)* | Password for that initial admin. Empty = a temporary password is generated and printed to the server log (must be changed on first login). |
+| `PROVISION_REFS` | *(empty)* | Comma-separated refs to create at startup. For self-hosted boxes with no platform SSO to provision from. Setting it requires access to the machine, which is the authority it stands on. |
 | `SESSION_TTL_HOURS` | `168` | Login session lifetime. |
 | `INVITE_TTL_HOURS` | `72` | Invite-link lifetime. |
 | `RESET_TTL_HOURS` | `24` | Password-reset-link lifetime. |

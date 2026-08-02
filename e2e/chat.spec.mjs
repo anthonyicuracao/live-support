@@ -137,6 +137,36 @@ async function textsOf(page, selector) {
     await goAvailable(agent);
     check("agent can sign in and go available", true);
 
+    // A ref differing only in case is the SAME tenant. Ron hit the opposite:
+    // a mis-typed capital resolved to a different database with none of his
+    // users in it, so a correct password reported a failed login.
+    const mixed = REF.toUpperCase();
+    const sameTenant = await agent.evaluate(async ([base, a, b]) => {
+      const one = await fetch(`${base}/api/online?ref=${encodeURIComponent(a)}`).then((r) => r.status);
+      const two = await fetch(`${base}/api/online?ref=${encodeURIComponent(b)}`).then((r) => r.status);
+      return { one, two };
+    }, [BASE, REF, mixed]);
+    check(
+      "a ref differing only in case resolves to the same tenant",
+      sameTenant.one === sameTenant.two,
+      `${REF} -> ${sameTenant.one}, ${mixed} -> ${sameTenant.two}`
+    );
+
+    // And an unknown ref must not BECOME a tenant just by being asked for.
+    // Rendering the login form used to create the database and seed an admin
+    // into it, with ADMIN_INITIAL_PASSWORD as its password where that is set.
+    //
+    // Touched here, asserted by run.mjs against the data directory: no HTTP
+    // response can answer this, because /api/online deliberately reports the
+    // same empty list for an unknown ref as for a quiet one — it must not
+    // become a way to enumerate tenants. The only honest evidence is whether a
+    // file appeared on disk.
+    await agent.evaluate(async ([base, ref]) => {
+      // Fetched rather than navigated to: the server renders the same form
+      // either way, and the agent's own session must survive the check.
+      await fetch(`${base}/login?ref=${encodeURIComponent(ref)}`);
+    }, [BASE, "never-provisioned-probe"]);
+
     // The video modality must be reachable on a console that has never yet
     // acquired a camera — which is every console, the first time. This shipped
     // deadlocked: the control was disabled unless perms.hasCamera, and

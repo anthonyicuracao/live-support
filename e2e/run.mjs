@@ -9,7 +9,7 @@
 //
 //   node e2e/run.mjs
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,10 @@ server = spawn(join(dataDir, "live-support"), [], {
     VAPID_PUBLIC_KEY: "",
     VAPID_PRIVATE_KEY: "",
     CHAT_INACTIVE_MINUTES: "10",
+    // Tenants are no longer created by an anonymous GET on the login form, so
+    // the harness asks for one explicitly — the same affordance a self-hosted
+    // operator uses when there is no platform SSO to provision from.
+    PROVISION_REFS: "e2e.local",
     MAX_CONCURRENT_CHATS: "3",
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -78,8 +82,8 @@ if (!(await waitHealthy())) {
   process.exit(1);
 }
 
-// The tenant DB must exist before a guest may use it — /login?ref= bootstraps it
-// along with the admin account.
+// The tenant is created at startup from PROVISION_REFS above; this only warms
+// the admin bootstrap, which still runs on first sight of an existing tenant.
 await fetch(`${BASE}/login?ref=e2e.local`).catch(() => {});
 
 // Any spec can be driven by the same hermetic boot — screenshots want an
@@ -91,6 +95,17 @@ const test = spawn(process.execPath, [join(here, spec)], {
   env: { ...process.env, LS_BASE: BASE, LS_REF: "e2e.local", LS_ADMIN: "admin", LS_ADMIN_PW: ADMIN_PW },
 });
 test.on("exit", (code) => {
+  // The spec asks the server for a tenant nobody provisioned; the evidence is
+  // here, not in any response. A stray file means an anonymous GET can still
+  // mint a tenant — and with ADMIN_INITIAL_PASSWORD set, seed a usable admin
+  // into it.
+  const strays = readdirSync(dataDir).filter((f) => f.startsWith("never-provisioned-probe"));
+  if (strays.length) {
+    console.log(`\nFAIL  an unknown ref became a tenant: ${strays.join(", ")}`);
+    code = 1;
+  } else {
+    console.log("PASS  an unknown ref did not become a tenant");
+  }
   if (code !== 0) {
     console.log("\n--- server log ---");
     console.log(serverLog.join("").split("\n").slice(-25).join("\n"));
