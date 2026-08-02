@@ -1348,13 +1348,13 @@ type loginView struct {
 	Error    string
 	// RefLocked hides the ref input when the tenant came in via ?ref=.
 	RefLocked bool
+	// InviteLink is set once, immediately after a tenant is provisioned with
+	// the shared secret: the single-use link that creates its first admin.
+	InviteLink string
 }
 
 func (a *authApp) loginForm(w http.ResponseWriter, r *http.Request) {
 	ref := refFromRequest(r)
-	if db := tenantDB(ref); db != nil {
-		a.bootstrapTenant(db, ref)
-	}
 	a.render(w, http.StatusOK, "login.tmpl", loginView{
 		base:      a.publicBase(ref),
 		FormCSRF:  issueCSRF(w, a.secure),
@@ -1378,19 +1378,59 @@ func (a *authApp) login(w http.ResponseWriter, r *http.Request) {
 		renderErr("Your session expired. Please try again.")
 		return
 	}
-	db := tenantDB(ref)
-	if db == nil {
-		renderErr("Please enter a valid domain.")
-		return
-	}
-	a.bootstrapTenant(db, ref)
-
 	username := r.PostFormValue("username")
 	password := r.PostFormValue("password")
 	throttleKey := ref + "|" + username
 
+	// Throttled before anything is looked up, so the provisioning check below
+	// is under the same rate limit as an ordinary password attempt and cannot
+	// be used to probe the secret faster than one can guess a password.
 	if a.throttle.blocked(throttleKey) {
 		renderErr("Too many attempts. Please wait a few minutes and try again.")
+		return
+	}
+
+	db := tenantDB(ref)
+	if db == nil {
+		// Unknown tenant. It may be provisioned here by presenting the shared
+		// secret as the password, which is the same authority an SSO link
+		// carries — that token is only trustworthy because it was signed with
+		// this secret. So no new configuration is needed to stand up the first
+		// tenant on a self-hosted box: whoever can read the secret file can
+		// already mint SSO links for any ref.
+		//
+		// Deliberately creation-only. Accepting the secret against an EXISTING
+		// tenant would be a master password that walks past every per-tenant
+		// admin credential, which is a far worse thing than the inconvenience
+		// it would save.
+		if !a.provisioningLogin(ref, username, password) {
+			a.throttle.fail(throttleKey)
+			renderErr("Please enter a valid domain.")
+			return
+		}
+		newDB := tenantDBProvision(ref)
+		if newDB == nil {
+			renderErr("Please enter a valid domain.")
+			return
+		}
+		// An invite, not a session. The secret proves the authority to CREATE a
+		// tenant; it is not an identity, and nobody should end up operating as
+		// an admin account they did not choose the password for. The operator
+		// redeems this and picks their own username and password, so the tenant
+		// has no credential anyone else could already know.
+		raw, err := createInviteRow(newDB, RoleAdmin, "", 0, a.inviteTTL)
+		if err != nil {
+			renderErr("Could not create the first admin invite. Please try again.")
+			return
+		}
+		a.throttle.reset(throttleKey)
+		log.Printf("[Auth] %s: tenant provisioned; first-admin invite issued", safeRefFile(ref))
+		a.render(w, http.StatusOK, "login.tmpl", loginView{
+			base:       a.publicBase(ref),
+			FormCSRF:   issueCSRF(w, a.secure),
+			RefLocked:  r.URL.Query().Get("ref") != "",
+			InviteLink: a.requestBaseURL(r) + "/invite?ref=" + url.QueryEscape(safeRefFile(ref)) + "&t=" + raw,
+		})
 		return
 	}
 
@@ -1441,6 +1481,22 @@ func (a *authApp) logout(w http.ResponseWriter, r *http.Request) {
 	clearAvailability(info.db, info.user.ID)
 	a.clearSessionCookie(w)
 	http.Redirect(w, r, "/login?ref="+url.QueryEscape(info.ref), http.StatusSeeOther)
+}
+
+// provisioningLogin reports whether these credentials may bring a tenant into
+// existence: the configured admin username, and the shared secret as the
+// password.
+//
+// Constant-time, and false whenever no secret is configured — otherwise an
+// unconfigured box would accept an empty password as proof of authority.
+func (a *authApp) provisioningLogin(ref, username, password string) bool {
+	if a.ssoSecret == "" || password == "" || safeRefFile(ref) == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(username), []byte(a.adminUsername)) != 1 {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(password), []byte(a.ssoSecret)) == 1
 }
 
 // sso signs a user in via a platform-minted token (see the SSO token

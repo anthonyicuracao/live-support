@@ -4,6 +4,10 @@
   <h1>{{.SiteName}}</h1>
   <p class="lede">Agent sign in{{if .RefLocked}} — {{.Ref}}{{end}}</p>
   {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
+  {{if .InviteLink}}<div class="notice ok">
+    Tenant created. Open this link to choose the first admin username and
+    password (single use, expires):<span class="code">{{.InviteLink}}</span>
+  </div>{{end}}
   <form method="POST" action="/login{{if .RefLocked}}?ref={{.Ref}}{{end}}">
     <input type="hidden" name="csrf" value="{{.FormCSRF}}">
     {{if .RefLocked}}

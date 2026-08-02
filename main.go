@@ -415,28 +415,6 @@ func newDBPool(dataDir string) (*dbPool, error) {
 	return &dbPool{dataDir: dataDir, dbs: make(map[string]*sql.DB)}, nil
 }
 
-// provisionRefs creates the tenants named in PROVISION_REFS (comma-separated)
-// at startup.
-//
-// Tenants are otherwise born only from a valid SSO token, which cannot be
-// forged without the shared secret. That is the right default, but it leaves
-// no way to stand a tenant up on a self-hosted box that is not driven by the
-// platform, and no way for the test harness to make one. Setting an env var
-// requires access to the machine, which is authority enough.
-func provisionRefs(list string) {
-	for _, raw := range strings.Split(list, ",") {
-		ref := strings.TrimSpace(raw)
-		if ref == "" {
-			continue
-		}
-		if _, err := dbs.get(ref); err != nil {
-			log.Printf("[DB] could not provision %q: %v", ref, err)
-			continue
-		}
-		log.Printf("[DB] provisioned tenant %q (PROVISION_REFS)", safeRefFile(ref))
-	}
-}
-
 // reconcileRefCase renames mixed-case tenant files to their lower-case name,
 // so refs written before normalisation stay reachable afterwards.
 //
@@ -2031,7 +2009,6 @@ func main() {
 	if err != nil {
 		log.Fatal("init db pool:", err)
 	}
-	provisionRefs(os.Getenv("PROVISION_REFS"))
 	hub = newHub()
 
 	mux := http.NewServeMux()

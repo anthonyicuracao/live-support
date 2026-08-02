@@ -53,10 +53,6 @@ server = spawn(join(dataDir, "live-support"), [], {
     VAPID_PUBLIC_KEY: "",
     VAPID_PRIVATE_KEY: "",
     CHAT_INACTIVE_MINUTES: "10",
-    // Tenants are no longer created by an anonymous GET on the login form, so
-    // the harness asks for one explicitly — the same affordance a self-hosted
-    // operator uses when there is no platform SSO to provision from.
-    PROVISION_REFS: "e2e.local",
     MAX_CONCURRENT_CHATS: "3",
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -82,13 +78,90 @@ if (!(await waitHealthy())) {
   process.exit(1);
 }
 
-// The tenant is created at startup from PROVISION_REFS above; this only warms
-// the admin bootstrap, which still runs on first sight of an existing tenant.
-await fetch(`${BASE}/login?ref=e2e.local`).catch(() => {});
+// Provision the tenant exactly the way a self-hosted operator does, because
+// nothing else can create one: sign in with the shared secret as the password,
+// then redeem the admin invite that comes back. Exercising it here is also the
+// only coverage the path gets.
+const REF = "e2e.local";
+const csrfOf = (html) => (/name="csrf"[^>]*value="([^"]*)"/.exec(html) || [])[1] || "";
+// ALL of them. `headers.get("set-cookie")` joins multiple cookies with ", ",
+// so splitting on ";" keeps only the first - and when the CSRF cookie was not
+// first, every POST failed the CSRF check and re-rendered, which reads exactly
+// like a wrong password.
+const cookiesOf = (res) =>
+  (res.headers.getSetCookie?.() || [res.headers.get("set-cookie") || ""])
+    .map((c) => c.split(";")[0]).filter(Boolean).join("; ");
+{
+  const form = await fetch(`${BASE}/login?ref=${REF}`);
+  const cookie = cookiesOf(form);
+  const res = await fetch(`${BASE}/login?ref=${REF}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie },
+    body: new URLSearchParams({
+      ref: REF, username: "admin", password: "e2e-connect-secret",
+      csrf: csrfOf(await form.text()),
+    }),
+  });
+  const html = await res.text();
+  // Unescaped: the link is read out of rendered HTML, where `&t=` arrives as
+  // `&amp;t=`. Parsed as-is the token parameter is named "amp;t", so the
+  // invite is presented without a token and comes back Invalid - which renders
+  // a page with no password field, so a naive "did the form re-render" check
+  // calls it a success.
+  const link = ((/\/invite\?ref=[^"<\s]*/.exec(html) || [])[0] || "").replace(/&amp;/g, "&");
+  if (!link) {
+    console.error("provisioning did not return an admin invite:\n" + html.slice(0, 400));
+    process.exit(1);
+  }
+  // Redeem it: the operator chooses the username and password themselves, so
+  // the tenant never holds a credential anyone else could already know.
+  const invForm = await fetch(`${BASE}${link}`);
+  const invCookie = cookiesOf(invForm);
+  const token = new URL(BASE + link).searchParams.get("t");
+  const redeem = await fetch(`${BASE}/invite`, {
+    method: "POST", redirect: "follow",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: invCookie },
+    body: new URLSearchParams({
+      ref: REF, t: token, username: "admin",
+      new: ADMIN_PW, confirm: ADMIN_PW, csrf: csrfOf(await invForm.text()),
+    }),
+  });
+  const redeemBody = await redeem.text();
 
-// Any spec can be driven by the same hermetic boot — screenshots want an
-// identical server to the tests, not a hand-built one that drifts from it.
-//   E2E_SPEC=shots.mjs node e2e/run.mjs
+  // A re-rendered form means it did NOT redeem: the handler answers 200 either
+  // way, so status alone cannot tell success from a rejected invite.
+  if (!redeem.ok || /name="new"/.test(redeemBody)) {
+    const why = (/class="notice err">([^<]*)/.exec(redeemBody) || [])[1] || redeemBody.slice(0, 300);
+    console.error(`invite redemption failed (${redeem.status}): ${why}`);
+    process.exit(1);
+  }
+  // Prove the credential the browser tests are about to use actually works.
+  // Redemption reporting success is not the same as an account that can sign
+  // in, and a failure here is far easier to read than a missing selector.
+  const check = await fetch(`${BASE}/login?ref=${REF}`);
+  const checkCookie = cookiesOf(check);
+  // Manual, and asserted on the redirect itself. Following it looks like a
+  // failed login: Node's fetch has no cookie jar, so the session set by the
+  // 303 is not sent to /users, which bounces straight back to /login with no
+  // error message at all. In the browser spec the opposite holds - there,
+  // manual yields an opaque status 0 - so the two suites must read the outcome
+  // differently.
+  const signIn = await fetch(`${BASE}/login?ref=${REF}`, {
+    method: "POST", redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", cookie: checkCookie },
+    body: new URLSearchParams({
+      ref: REF, username: "admin", password: ADMIN_PW, csrf: csrfOf(await check.text()),
+    }),
+  });
+  const landed = signIn.headers.get("location") || "(no redirect)";
+  if (signIn.status !== 303) {
+    console.error(`the provisioned admin cannot sign in (${signIn.status}): ` +
+      ((/class="notice err">([^<]*)/.exec(await signIn.text()) || [])[1] || "").trim());
+    process.exit(1);
+  }
+  console.log(`provisioned ${REF} via secret + invite; first admin signs in to ${landed}`);
+}
+
 const spec = process.env.E2E_SPEC || "chat.spec.mjs";
 const test = spawn(process.execPath, [join(here, spec)], {
   stdio: "inherit",
@@ -99,12 +172,26 @@ test.on("exit", (code) => {
   // here, not in any response. A stray file means an anonymous GET can still
   // mint a tenant — and with ADMIN_INITIAL_PASSWORD set, seed a usable admin
   // into it.
-  const strays = readdirSync(dataDir).filter((f) => f.startsWith("never-provisioned-probe"));
+  const files = readdirSync(dataDir);
+  const strays = files.filter((f) => f.startsWith("never-provisioned-probe"));
   if (strays.length) {
     console.log(`\nFAIL  an unknown ref became a tenant: ${strays.join(", ")}`);
     code = 1;
   } else {
     console.log("PASS  an unknown ref did not become a tenant");
+  }
+  // The spec provisioned "MixedCase.Probe". It must have landed in the
+  // normalised file, or provisioning would itself recreate the case split.
+  const mixed = files.filter((f) => f.toLowerCase().startsWith("mixedcase.probe"));
+  const badCase = mixed.filter((f) => f !== f.toLowerCase());
+  if (!mixed.length) {
+    console.log("FAIL  provisioning a mixed-case ref created nothing");
+    code = 1;
+  } else if (badCase.length) {
+    console.log(`FAIL  provisioning kept the case: ${badCase.join(", ")}`);
+    code = 1;
+  } else {
+    console.log("PASS  a mixed-case ref provisioned into the normalised database");
   }
   if (code !== 0) {
     console.log("\n--- server log ---");

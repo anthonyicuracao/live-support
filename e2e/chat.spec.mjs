@@ -152,6 +152,38 @@ async function textsOf(page, selector) {
       `${REF} -> ${sameTenant.one}, ${mixed} -> ${sameTenant.two}`
     );
 
+    // Every check below signs in as some other tenant, and the session cookie
+    // is scoped to the ORIGIN, not the tenant — running them on the agent's
+    // page silently replaced its session and broke the rest of the run. They
+    // get their own throwaway context.
+    // Posting the login form and reporting WHERE it landed.
+    //
+    // Not `redirect: "manual"` — fetch answers that with an opaque-redirect
+    // response, status 0 and no headers, whatever the server did. Three
+    // security assertions were written against `status !== 303` and passed
+    // vacuously: they would have held just as well if the secret HAD signed in.
+    // The landing URL is observable and actually distinguishes the cases.
+    const postLogin = (page, ref, username, password) =>
+      page.evaluate(async ([base, r, u, p]) => {
+        const form = await fetch(`${base}/login?ref=${encodeURIComponent(r)}`);
+        const csrf = (/name="csrf"[^>]*value="([^"]*)"/.exec(await form.text()) || [])[1] || "";
+        const res = await fetch(`${base}/login?ref=${encodeURIComponent(r)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ ref: r, username: u, password: p, csrf }),
+        });
+        const body = await res.text();
+        return {
+          url: new URL(res.url).pathname,
+          invite: /\/invite\?ref=/.test(body),
+          err: ((/class="notice err">([^<]*)/.exec(body) || [])[1] || "").trim(),
+        };
+      }, [BASE, ref, username, password]);
+
+    const probeCtx = await browser.newContext();
+    const probe = await probeCtx.newPage();
+    await probe.goto(`${BASE}/login?ref=${encodeURIComponent(REF)}`, { waitUntil: "domcontentloaded" });
+
     // And an unknown ref must not BECOME a tenant just by being asked for.
     // Rendering the login form used to create the database and seed an admin
     // into it, with ADMIN_INITIAL_PASSWORD as its password where that is set.
@@ -161,11 +193,49 @@ async function textsOf(page, selector) {
     // same empty list for an unknown ref as for a quiet one — it must not
     // become a way to enumerate tenants. The only honest evidence is whether a
     // file appeared on disk.
-    await agent.evaluate(async ([base, ref]) => {
+    await probe.evaluate(async ([base, ref]) => {
       // Fetched rather than navigated to: the server renders the same form
       // either way, and the agent's own session must survive the check.
       await fetch(`${base}/login?ref=${encodeURIComponent(ref)}`);
     }, [BASE, "never-provisioned-probe"]);
+
+    // The secret provisions, it does not authenticate. Accepting it against an
+    // EXISTING tenant would be a master password walking past every per-tenant
+    // admin credential — worse than the inconvenience it would save.
+    const masterKey = await postLogin(probe, REF, "admin", "e2e-connect-secret");
+    check(
+      "the shared secret cannot sign in to a tenant that already exists",
+      masterKey.url === "/login" && masterKey.invite === false,
+      `landed on ${masterKey.url} — the secret is acting as a master password`
+    );
+
+    // And a wrong secret provisions nothing. Pairs with the disk check in
+    // run.mjs: this asserts the refusal, that asserts no file was left behind.
+    const wrongSecret = await postLogin(probe, "never-provisioned-probe", "admin", "not-the-secret");
+    check(
+      "a wrong secret does not provision a tenant",
+      wrongSecret.url === "/login" && wrongSecret.invite === false,
+      `landed on ${wrongSecret.url}`
+    );
+
+    // Both fixes at once: provisioning a MIXED-CASE ref must land in the
+    // normalised database, or the very act of creating a tenant would recreate
+    // the split that caused the original login failure.
+    const mixedProvision = await postLogin(probe, "MixedCase.Probe", "admin", "e2e-connect-secret");
+    check(
+      "a mixed-case ref can be provisioned with the secret",
+      mixedProvision.invite === true,
+      `no invite link came back (landed on ${mixedProvision.url}, error "${mixedProvision.err}")`
+    );
+    // The secret provisions; it never becomes a session. What comes back is a
+    // single-use invite, so the operator picks their own username and password
+    // and the tenant holds no credential anyone else could already know.
+    check(
+      "provisioning hands back an invite rather than signing anyone in",
+      mixedProvision.url === "/login",
+      `landed on ${mixedProvision.url} — provisioning signed someone in`
+    );
+    await probeCtx.close();
 
     // The video modality must be reachable on a console that has never yet
     // acquired a camera — which is every console, the first time. This shipped
