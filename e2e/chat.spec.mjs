@@ -269,6 +269,20 @@ async function textsOf(page, selector) {
       `agent tick is "${agentTick}"`
     );
 
+    // Spy on the alert BEFORE the follow-up, with the agent's thread open and
+    // the page focused — the posture an agent holds all day, and the one that
+    // shipped silent. deliver() (first message of a thread) and this follow-up
+    // path are separate code, and fixing the announcement in one left the other
+    // gated on visibility, so an agent watching the conversation was told
+    // nothing. Asserting the ALERT fires, rather than that a sound was heard,
+    // is what makes this checkable: audibility is not observable from the page,
+    // but whether we tried is.
+    await agent.evaluate(() => {
+      window.__alerts = [];
+      const real = window.Shared.notify;
+      window.Shared.notify = (a) => { window.__alerts.push(a); return real(a); };
+    });
+
     // A SECOND visitor message must also go blue. Only the first went through
     // the path that marks a thread read, so follow-ups stayed grey even though
     // the agent had read and answered them.
@@ -284,6 +298,18 @@ async function textsOf(page, selector) {
       "a follow-up visitor message is marked read too, not just the first",
       secondTick === "read",
       `second message tick is "${secondTick}" — read marking only ran for the first`
+    );
+
+    const alerts = await agent.evaluate(() => window.__alerts || []);
+    check(
+      "the console announces a follow-up even with the thread open and focused",
+      alerts.length >= 1,
+      "no alert fired — the agent watching the conversation was told nothing"
+    );
+    check(
+      "and the alert carries the message that arrived",
+      alerts.some((a) => (a.body || "").includes("second message from the visitor")),
+      JSON.stringify(alerts)
     );
 
     // ── a message sent while the guest is OFFLINE still arrives ──────────

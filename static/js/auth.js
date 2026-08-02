@@ -2615,9 +2615,11 @@
         renderRoster();
         renderMessages();
         renderDockUnread();
-        if (!visible) {
-          S.notify({ title: ct.name || "New message", body: data.body || "", tag: "conv-" + data.cid });
-        }
+        // Announced whether or not the thread is on screen, matching deliver()
+        // above. Gating this on visibility is what made the console silent for
+        // an agent sitting in front of the open conversation — the one posture
+        // an agent is in most of the day.
+        S.notify({ title: ct.name || "New message", body: data.body || "", tag: "conv-" + data.cid });
         return;
       }
       if (!data.fromId || !data.text) return;
