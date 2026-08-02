@@ -312,6 +312,19 @@ async function textsOf(page, selector) {
       JSON.stringify(alerts)
     );
 
+    // Unfocused is the case that matters most and is the easiest to ship
+    // broken, because a headless page is focused by default and never
+    // exercises it. Blurring the page makes the console take the away-from-
+    // screen branch for real.
+    await agent.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await agent.evaluate(() => Object.defineProperty(document, "hasFocus", { value: () => false, configurable: true }));
+    const awayRoute = await agent.evaluate(() => window.Shared.notify({ title: "t", body: "b" }));
+    check(
+      "an unfocused console still makes a sound, not just a silent banner",
+      awayRoute === "audio" || awayRoute === "audio+notification",
+      `notify() resolved to ${awayRoute} — away from the screen is exactly when sound is the signal that works`
+    );
+
     // ── a message sent while the guest is OFFLINE still arrives ──────────
     //
     // Ron's multi-device case: a phone freezes the tab the moment it goes to

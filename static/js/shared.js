@@ -767,25 +767,32 @@ window.Shared = (() => {
   async function notify({ title, body, tag }) {
     const focused = document.visibilityState === "visible" && document.hasFocus();
 
-    // Focused and unlocked: a quiet in-page blip is the least intrusive thing
-    // that works. An OS notification for a tab you are already looking at is
-    // noise.
-    if (focused && (await playNotice())) return "audio";
+    // Sound is attempted FIRST and unconditionally, not only when focused.
+    // The earlier shape treated audio as the focused-case channel and handed
+    // the unfocused case to notifications alone — backwards. Being away from
+    // the screen is exactly when a sound is the signal that works, and an OS
+    // banner nobody is looking at is no better than the badge. An unlocked
+    // context keeps playing in a background tab.
+    const sounded = await playNotice();
+    if (focused && sounded) return "audio";
 
-    // Not focused, or audio is locked. A system notification carries its own
-    // sound and sidesteps the policy entirely.
+    // Away from the console, add the OS banner on top of the sound. This
+    // needs permission the agent granted via Settings → alerts; when they
+    // have not, the sound above still carries it, which is the whole reason
+    // the notification is no longer load-bearing.
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       const silent = noticeMuted();
       try {
         const reg = await navigator.serviceWorker?.getRegistration();
         const opts = { body, tag: tag || "chat", renotify: true, silent };
-        if (reg) { await reg.showNotification(title, opts); return "notification"; }
-        new Notification(title, opts);
-        return "notification";
-      } catch (e) { /* fall through to the badge */ }
+        if (reg) await reg.showNotification(title, opts);
+        else new Notification(title, opts);
+        return sounded ? "audio+notification" : "notification";
+      } catch (e) { /* fall through */ }
     }
+    if (sounded) return "audio";
 
-    // Last resort, always available: put it in the tab title.
+    // Last resort, always available and needing no permission at all.
     bumpTitleBadge();
     return "badge";
   }
