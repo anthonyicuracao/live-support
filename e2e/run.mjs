@@ -82,7 +82,11 @@ if (!(await waitHealthy())) {
 // along with the admin account.
 await fetch(`${BASE}/login?ref=e2e.local`).catch(() => {});
 
-const test = spawn(process.execPath, [join(here, "chat.spec.mjs")], {
+// Any spec can be driven by the same hermetic boot — screenshots want an
+// identical server to the tests, not a hand-built one that drifts from it.
+//   E2E_SPEC=shots.mjs node e2e/run.mjs
+const spec = process.env.E2E_SPEC || "chat.spec.mjs";
+const test = spawn(process.execPath, [join(here, spec)], {
   stdio: "inherit",
   env: { ...process.env, LS_BASE: BASE, LS_REF: "e2e.local", LS_ADMIN: "admin", LS_ADMIN_PW: ADMIN_PW },
 });

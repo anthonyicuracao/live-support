@@ -175,3 +175,56 @@ body.guest {
   padding: 0 0.25rem;
 }
 
+
+/* ─── Desktop: controls at the top, chat grows into the space ─────────────
+   The dock is a fixed, vertically-centred panel. On a tall desktop window it
+   sat over the middle of the card and covered the very controls the visitor
+   had just used — Chat/Audio/Video and the device pickers disappeared behind
+   it the moment a chat opened.
+
+   Floating over the page is right on a phone, where the chat IS the screen. On
+   a desktop there is room for both, so the chat stops overlaying and becomes
+   the last block of the card: controls above it, conversation below, and every
+   remaining pixel of window height available to the transcript. */
+@media (min-width: 48rem) {
+  body.guest {
+    align-items: flex-start;
+    padding-top: 32px;
+    padding-bottom: 32px;
+  }
+  .guest-user > .im {
+    position: static;
+    transform: none;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    max-width: 100%;
+    margin-top: 18px;
+    box-shadow: none;
+    border-bottom: 1px solid var(--grey);
+  }
+  /* Grows with the window instead of sitting at a fixed 18rem. The floor
+     matters as much as the ceiling: a short window must not collapse the
+     transcript to a couple of lines. */
+  .guest-user > .im .im-thread {
+    height: clamp(18rem, calc(100vh - 30rem), 40rem);
+  }
+  .guest-user > .im .im-messages {
+    max-height: none;
+  }
+  /* Expanded widens the CARD, since the chat is now part of it. */
+  .guest-user.guest-expanded {
+    width: 46rem;
+    max-width: calc(100vw - 4rem);
+  }
+  .guest-user.guest-expanded > .im,
+  .guest-user > .im.im-expanded {
+    width: auto;
+    max-width: 100%;
+  }
+  .guest-user > .im.im-expanded .im-messages {
+    max-height: none;
+    min-height: 20rem;
+  }
+}

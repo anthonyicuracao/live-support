@@ -440,6 +440,65 @@
     return result;
   }
 
+  // probeCamera: confirm a camera exists and is permitted, at the moment the
+  // agent asks for video rather than at Go-Available.
+  //
+  // The change event from ticking the box is a user gesture, which is what
+  // Android and Safari require before they will even show the permission
+  // prompt — deferring the request to Go-Available meant the prompt was
+  // requested outside a gesture and could be suppressed silently.
+  //
+  // On failure the tick is reverted, because leaving it set would promise the
+  // server a modality this device cannot serve, and a visitor would be routed
+  // to an agent who cannot answer.
+  async function probeCamera() {
+    const hintEl = document.getElementById("video-mode-hint");
+    const say = (t) => { if (hintEl) hintEl.textContent = t; };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      say("— this browser cannot open a camera");
+      revertVideo();
+      return false;
+    }
+    say("— checking the camera…");
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    } catch (e) {
+      // NotAllowedError is a refusal, NotFoundError is absence. Worth telling
+      // apart: one is fixed in browser settings, the other cannot be fixed.
+      const denied = e && (e.name === "NotAllowedError" || e.name === "SecurityError");
+      say(denied
+        ? "— camera permission was refused; allow it in your browser's site settings"
+        : "— no camera found on this device");
+      revertVideo();
+      return false;
+    }
+    perms.hasCamera = stream.getVideoTracks().length > 0;
+    // Release it again unless a live stream is already in flight — holding the
+    // camera open while merely Paused lights the recording indicator for no
+    // reason, which reads as the console watching the agent.
+    stream.getTracks().forEach((t) => t.stop());
+    if (!perms.hasCamera) { say("— no camera found on this device"); revertVideo(); return false; }
+    say("— camera ready");
+    populateDevicesSoon();
+    if (isAvailable) {
+      // Already on shift: the server is advertising modalities for this
+      // session, so tell it the set has grown rather than waiting for the next
+      // Go-Available it may never see.
+      await S.updateSessionCapabilities(sessionId, perms.hasCamera, perms.hasMic);
+      await postAvailability(false);
+    }
+    renderAvailabilityUI();
+    return true;
+  }
+  function revertVideo() {
+    wantsVideo = false;
+    saveVideoPref(false);
+    if (videoModeInput) videoModeInput.checked = false;
+    modes = currentModes();
+    renderAvailabilityUI();
+  }
+
   // If acquisition landed on a different device than the saved pick, the pick
   // is stale — forget it so the pickers, localStorage, and future acquisitions
   // agree instead of silently disagreeing forever.
@@ -610,9 +669,14 @@
     if (audioModeInput) audioModeInput.checked = modes.audio;
     if (videoModeInput) {
       videoModeInput.checked = wantsVideo;
-      // Video additionally needs the hardware to exist. Capability and intent
-      // are separate: no camera means the intent cannot be honoured.
-      if (!perms.hasCamera) videoModeInput.disabled = true;
+      // Deliberately NOT disabled on `!perms.hasCamera`, which deadlocked.
+      // hasCamera only ever became true as a RESULT of acquiring a camera, and
+      // the camera was only ever requested when video was already ticked — so
+      // on any device that had not already been through a successful video
+      // acquisition, the box could not be ticked, and therefore never could
+      // be. Available ON or OFF made no difference, because the disable did
+      // not depend on it. Intent now comes first and the tick is the gesture
+      // that lets us go and ask.
     }
   }
   renderAvailabilityUI();
@@ -622,12 +686,17 @@
   [chatModeInput, audioModeInput, videoModeInput].forEach((el) => {
     if (!el) return;
     el.addEventListener("change", () => {
-      modes = currentModes();
-      renderAvailabilityUI(); // keep the "Available for …" text honest
+      // Intent is read FIRST. renderAvailabilityUI() writes checked back from
+      // wantsVideo, so calling it before this line erased the agent's tick and
+      // then read the erased value — leaving wantsVideo false and the probe
+      // unreachable. Invisible until the control became clickable at all.
       if (el === videoModeInput) {
         wantsVideo = videoModeInput.checked;
         saveVideoPref(wantsVideo);
       }
+      modes = currentModes();
+      renderAvailabilityUI(); // keep the "Available for …" text honest
+      if (el === videoModeInput && wantsVideo) probeCamera();
       // Turning everything off is the same thing as pausing. Say so, rather
       // than leaving an "available for nothing" state the server would only
       // silently collapse anyway.

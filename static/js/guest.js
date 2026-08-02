@@ -1123,6 +1123,11 @@
       expandBtn.addEventListener("click", (e) => {
         e.stopPropagation(); // must not also toggle the dock
         const on = section.classList.toggle("im-expanded");
+        // The chat flows inside the card on desktop rather than floating over
+        // it, so widening the chat means widening the card. Marked on the card
+        // itself instead of relying on :has(), which would silently do nothing
+        // on an older browser and leave the chat overflowing its container.
+        document.querySelector(".guest-user")?.classList.toggle("guest-expanded", on);
         expandBtn.setAttribute("aria-pressed", String(on));
         expandBtn.setAttribute("aria-label", on ? "Restore chat size" : "Expand chat");
         // Expanding reveals more of the thread, so scroll to the newest.

@@ -432,3 +432,52 @@ body {
   .logs-body,
   .messages-body { padding: 0 16px 16px; }
 }
+
+/* ─── Phone layout for the Chats card ────────────────────────────────────
+   The Chats card is a two-column layout — a fixed 7rem roster beside the
+   thread. On a 390px phone that leaves roughly 200px for the conversation, so
+   visitor names truncated to "Jane …" and messages wrapped every three words.
+   Nothing overflowed the viewport, which is why this never showed as a
+   horizontal scrollbar: the width was being spent, just not on the reading.
+
+   Below the breakpoint the roster becomes a horizontal strip above the thread,
+   and the thread takes the full width. The card itself is already un-docked
+   and full-width here (see .auth-user > .im above), so only the inner layout
+   needs to change. */
+@media (max-width: 40rem) {
+  .auth-user > .im .im-layout {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  /* Was a 7rem column; now a strip that scrolls sideways only when the agent
+     genuinely has several conversations open. */
+  .auth-user > .im .im-sidebar {
+    flex: 0 0 auto;
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .auth-user > .im .im-roster {
+    display: flex;
+    gap: 0.25rem;
+  }
+  .auth-user > .im .im-roster-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .auth-user > .im .im-roster-name {
+    max-width: 9rem;
+  }
+  /* Full width, and taller: the space freed by stacking goes to the
+     transcript rather than to padding.
+
+     min-height, not height: .im-layout is a flex column here, and a flex item
+     with a plain height still shrinks below it — which is why an earlier
+     `height: 55vh` computed to 117px and left the transcript a two-line slot
+     inside a full-width card. */
+  .auth-user > .im .im-thread {
+    flex: 1 1 auto;
+    min-height: 50vh;
+    height: auto;
+  }
+}

@@ -137,6 +137,46 @@ async function textsOf(page, selector) {
     await goAvailable(agent);
     check("agent can sign in and go available", true);
 
+    // The video modality must be reachable on a console that has never yet
+    // acquired a camera — which is every console, the first time. This shipped
+    // deadlocked: the control was disabled unless perms.hasCamera, and
+    // hasCamera only became true as a result of acquiring a camera, which was
+    // only attempted when video was already ticked. Ron hit it on Android and
+    // the tick simply did nothing, in both Available states.
+    //
+    // Chromium runs with fake media here, so a camera is present and permitted
+    // and the probe should succeed.
+    await agent.evaluate(() => {
+      const el = document.getElementById("availability-toggle");
+      if (el && el.checked) el.click(); // pause: modes are locked while Available
+    });
+    await agent.waitForTimeout(500);
+    const videoBox = agent.locator("#video-mode-toggle");
+    const wasDisabled = await videoBox.isDisabled();
+    check(
+      "the video modality can be ticked before a camera has ever been acquired",
+      wasDisabled === false,
+      "#video-mode-toggle is disabled on a console that has never acquired a camera — the deadlock"
+    );
+    if (!wasDisabled) {
+      await agent.evaluate(() => document.getElementById("video-mode-toggle").click());
+      await agent.waitForTimeout(2000);
+      const stuck = await agent.evaluate(() => document.getElementById("video-mode-toggle").checked);
+      check(
+        "and it stays ticked once the camera probe succeeds",
+        stuck === true,
+        "the tick reverted — the camera probe failed where fake media should have satisfied it"
+      );
+      // Put it back so the rest of the run sees the state it expects.
+      await agent.evaluate(() => {
+        const v = document.getElementById("video-mode-toggle");
+        if (v.checked) v.click();
+        const a = document.getElementById("availability-toggle");
+        if (a && !a.checked) a.click();
+      });
+      await agent.waitForTimeout(1200);
+    }
+
     // Diagnostic: what does the SERVER think this agent's state is? Splits
     // "availability never recorded" from "recorded but not discoverable".
     const avail = await agent.evaluate(async () => {

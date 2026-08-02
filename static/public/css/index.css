@@ -939,3 +939,4 @@ button,
 }
 .notice-mute:hover { opacity: 1; }
 .notice-mute[aria-pressed="true"] { opacity: 0.5; }
+
