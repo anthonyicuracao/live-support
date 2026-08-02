@@ -325,6 +325,26 @@ async function textsOf(page, selector) {
       `notify() resolved to ${awayRoute} — away from the screen is exactly when sound is the signal that works`
     );
 
+    // One message must never produce two chimes. With alerts permission
+    // granted the OS banner carries its own sound, so posting it un-silenced
+    // alongside our blip double-fires — which is what Ron would have heard,
+    // since his console has that permission.
+    const doubled = await agent.evaluate(async () => {
+      const posted = [];
+      const fakeReg = { showNotification: (t, o) => { posted.push(o); } };
+      const realGet = navigator.serviceWorker.getRegistration.bind(navigator.serviceWorker);
+      navigator.serviceWorker.getRegistration = async () => fakeReg;
+      Object.defineProperty(Notification, "permission", { value: "granted", configurable: true });
+      const route = await window.Shared.notify({ title: "t", body: "b" });
+      navigator.serviceWorker.getRegistration = realGet;
+      return { route, posted };
+    });
+    check(
+      "an OS banner posted alongside our blip is silent, so one message is one chime",
+      doubled.posted.length === 1 && doubled.posted[0].silent === true,
+      JSON.stringify(doubled)
+    );
+
     // ── a message sent while the guest is OFFLINE still arrives ──────────
     //
     // Ron's multi-device case: a phone freezes the tab the moment it goes to

@@ -781,7 +781,11 @@ window.Shared = (() => {
     // have not, the sound above still carries it, which is the whole reason
     // the notification is no longer load-bearing.
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      const silent = noticeMuted();
+      // Silent when our own blip already sounded, otherwise the agent gets two
+      // chimes for one message. The banner is still posted — it is wanted for
+      // the text and the OS notification centre — it just does not double up
+      // on the audio.
+      const silent = noticeMuted() || sounded;
       try {
         const reg = await navigator.serviceWorker?.getRegistration();
         const opts = { body, tag: tag || "chat", renotify: true, silent };
