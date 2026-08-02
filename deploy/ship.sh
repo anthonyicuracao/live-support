@@ -14,9 +14,23 @@ HOST="${LS_HOST:-ubuntu@44.198.69.248}"
 KEY="${LS_KEY:-$HOME/.ssh/Ron-Pinkas-AWS-1.pem}"
 SITE="${LS_SITE:-https://connect.instantaiguru.com}"
 
+# Wait for THIS tag's run, selected by headBranch. Taking "the most recent
+# release run" instead was silently wrong: on a fresh tag the previous run is
+# already complete, so the wait returned instantly, the pull got a stale
+# `latest`, and compose reported the container merely "Running". That is
+# exactly the tagged-but-not-live failure this script exists to prevent.
 echo "waiting for the release build of ${TAG}"
-gh run list --workflow=release --limit 1 --json databaseId -q '.[0].databaseId' \
-  | xargs -I{} gh run watch {} --exit-status >/dev/null
+run=""
+i=0
+while [ "$i" -lt 40 ]; do
+  run=$(gh run list --workflow=release --limit 20 \
+    --json databaseId,headBranch -q "[.[] | select(.headBranch == \"$TAG\")][0].databaseId")
+  [ -n "$run" ] && break
+  i=$((i + 1))
+  sleep 5
+done
+[ -n "$run" ] || { echo "no release run found for $TAG - was the tag pushed?" >&2; exit 1; }
+gh run watch "$run" --exit-status >/dev/null
 
 echo "pulling the image on ${HOST}"
 ssh -i "$KEY" "$HOST" \
