@@ -805,6 +805,10 @@ func (h *Hub) subscriberCount(channel string) int {
 }
 
 func (h *Hub) broadcast(channel, event string, payload json.RawMessage) {
+	h.broadcastCount(channel, event, payload)
+}
+
+func (h *Hub) broadcastCount(channel, event string, payload json.RawMessage) int {
 	msg := ServerMsg{Type: "broadcast", Channel: channel, Event: event, Payload: payload}
 	h.mu.Lock()
 	conns := make([]*Conn, 0, len(h.channels[channel]))
@@ -812,12 +816,15 @@ func (h *Hub) broadcast(channel, event string, payload json.RawMessage) {
 		conns = append(conns, c)
 	}
 	h.mu.Unlock()
+	queued := 0
 	for _, c := range conns {
 		select {
 		case c.send <- msg:
+			queued++
 		default: // slow client; drop message rather than block the hub
 		}
 	}
+	return queued
 }
 
 func (h *Hub) track(c *Conn, channel, key string, state map[string]interface{}) {

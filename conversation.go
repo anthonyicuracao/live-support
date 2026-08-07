@@ -354,6 +354,17 @@ func routeAgent(db *sql.DB, ref, callType string) (int64, bool) {
 	return bestID, bestSpare
 }
 
+func agentDisplayName(db *sql.DB, userID int64) string {
+	var name string
+	if err := db.QueryRow(
+		`SELECT display_name FROM agent_availability WHERE user_id = ?`, userID).
+		Scan(&name); err == nil && strings.TrimSpace(name) != "" {
+		return name
+	}
+	_ = db.QueryRow(`SELECT username FROM users WHERE id = ?`, userID).Scan(&name)
+	return name
+}
+
 // ───────────────────────── HTTP ─────────────────────────────────────────────
 
 // POST /api/conversation/start (public, ref-controlled).
@@ -408,8 +419,10 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		}
 		writeJSON(w, 200, map[string]any{
 			"cid": existing.CID, "token": tok, "channel": convChannel(existing.CID),
-			"agentId": existing.AgentUserID, "waiting": false,
-			"callType": existing.CallType, "resumed": true,
+			"agentId":   existing.AgentUserID,
+			"agentName": agentDisplayName(db, existing.AgentUserID),
+			"waiting":   false,
+			"callType":  existing.CallType, "resumed": true,
 		})
 		return
 	}
@@ -451,12 +464,13 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 	// visitor is better served by being offered chat now than by a ring nobody
 	// can pick up.
 	writeJSON(w, 200, map[string]any{
-		"cid":      cid,
-		"token":    tok,
-		"channel":  convChannel(cid),
-		"agentId":  agentID,
-		"waiting":  !hasSpare,
-		"callType": body.CallType,
+		"cid":       cid,
+		"token":     tok,
+		"channel":   convChannel(cid),
+		"agentId":   agentID,
+		"agentName": agentDisplayName(db, agentID),
+		"waiting":   !hasSpare,
+		"callType":  body.CallType,
 	})
 }
 

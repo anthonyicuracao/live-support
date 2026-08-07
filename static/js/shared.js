@@ -283,17 +283,21 @@ window.Shared = (() => {
   // one who offers this channel, and reports `waiting` when none has spare
   // capacity, so the UI can be honest instead of pretending.
   async function startConversation({ ref, callType, guestSession, guestName }) {
-    const resp = await fetch("/api/conversation/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref, callType, guestSession, guestName }),
-    });
-    if (!resp.ok) {
-      let reason = "unavailable";
-      try { reason = (await resp.json()).error || reason; } catch (e) { /* keep default */ }
-      return { error: reason, status: resp.status };
+    try {
+      const resp = await fetch("/api/conversation/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, callType, guestSession, guestName }),
+      });
+      if (!resp.ok) {
+        let reason = "unavailable";
+        try { reason = (await resp.json()).error || reason; } catch (e) { /* keep default */ }
+        return { error: reason, status: resp.status };
+      }
+      return await resp.json(); // { cid, token, channel, agentId, agentName }
+    } catch (e) {
+      return { error: "unreachable", status: 0 };
     }
-    return await resp.json(); // { cid, token, channel }
   }
 
   // Agent side: open contact with a visitor. The server creates the
@@ -301,13 +305,17 @@ window.Shared = (() => {
   // capability) to their private inbox, because an agent holds no grant for
   // someone else's inbox and must not be able to write into one.
   async function inviteGuest({ guestSession, guestName, callType, callerName, callId }) {
-    const resp = await fetch("/api/conversation/invite", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ guestSession, guestName, callType, callerName, callId }),
-    });
-    if (!resp.ok) return { error: "invite failed", status: resp.status };
-    return await resp.json(); // { cid, token, channel, callId }
+    try {
+      const resp = await fetch("/api/conversation/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guestSession, guestName, callType, callerName, callId }),
+      });
+      if (!resp.ok) return { error: "invite failed", status: resp.status };
+      return await resp.json(); // { cid, token, channel, callId }
+    } catch (e) {
+      return { error: "unreachable", status: 0 };
+    }
   }
 
   // Agent side: the conversations this agent still has open, with a capability
@@ -321,9 +329,13 @@ window.Shared = (() => {
   // Agent side: exchange a conversation id for this agent's capability. The
   // server issues it only for a conversation they actually own.
   async function agentConversationToken(cid) {
-    const resp = await fetch(`/api/conversation/token?cid=${encodeURIComponent(cid)}`);
-    if (!resp.ok) return { error: "not found", status: resp.status };
-    return await resp.json(); // { cid, token, channel, callType, guestName }
+    try {
+      const resp = await fetch(`/api/conversation/token?cid=${encodeURIComponent(cid)}`);
+      if (!resp.ok) return { error: "not found", status: resp.status };
+      return await resp.json(); // { cid, token, channel, callType, guestName }
+    } catch (e) {
+      return { error: "unreachable", status: 0 };
+    }
   }
 
   // Subscribe to a conversation. The token rides on the channel so it can be
@@ -342,23 +354,31 @@ window.Shared = (() => {
   // always one the transcript already has — an agent woken by push must never
   // find a gap where a delivered message should be.
   async function sendConversationMessage({ ref, cid, token, sender, body }) {
-    const resp = await fetch("/api/conversation/message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref, cid, token, sender, body }),
-    });
-    if (!resp.ok) return { error: "send failed", status: resp.status };
-    // No client-side publish: the SERVER broadcasts to the conversation
-    // channel. Doing both delivered every message twice to anyone subscribed.
-    return await resp.json();
+    try {
+      const resp = await fetch("/api/conversation/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, cid, token, sender, body }),
+      });
+      if (!resp.ok) return { error: "send failed", status: resp.status };
+      // No client-side publish: the SERVER broadcasts to the conversation
+      // channel. Doing both delivered every message twice to anyone subscribed.
+      return await resp.json();
+    } catch (e) {
+      return { error: "unreachable", status: 0 };
+    }
   }
 
   // The transcript, so a fresh console shows what the guest already said.
   async function loadTranscript({ ref, cid, token }) {
-    const qs = new URLSearchParams({ ref, cid, token });
-    const resp = await fetch(`/api/conversation/messages?${qs}`);
-    if (!resp.ok) return { messages: [] };
-    return await resp.json();
+    try {
+      const qs = new URLSearchParams({ ref, cid, token });
+      const resp = await fetch(`/api/conversation/messages?${qs}`);
+      if (!resp.ok) return { messages: [] };
+      return await resp.json();
+    } catch (e) {
+      return { messages: [] };
+    }
   }
 
   // Acknowledge the other side's messages up to an id. Fire-and-forget: a lost
@@ -385,46 +405,19 @@ window.Shared = (() => {
     } catch (e) { /* best effort: the governor also ages rows out */ }
   }
 
-  function subscribeToInbox(sessionId, onMessage) {
-    const channel = window.Realtime.channel(`inbox:${sessionId}`);
-    channel
-      .on("broadcast", { event: "message" }, ({ payload }) => {
-        onMessage(payload);
-      })
-      .subscribe();
-    return channel;
-  }
-
-  async function sendToInbox(targetSessionId, data) {
-    // The in-process hub relays broadcasts to current subscribers without
-    // requiring the sender to subscribe first — no subscribe/publish race.
+  async function sendAgentIM({ toUserId, text }) {
     try {
-      const ok = await window.Realtime.publish(`inbox:${targetSessionId}`, "message", data);
-      if (!ok) console.warn("[Inbox] Send failed (socket not open)");
+      const resp = await fetch("/api/im/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toUserId, body: text }),
+      });
+      if (!resp.ok) return { ok: false, delivered: false };
+      const data = await resp.json();
+      return { ok: true, delivered: !!data.delivered, ts: data.ts };
     } catch (e) {
-      console.error("[Inbox] sendToInbox error:", e.message);
+      return { ok: false, delivered: false };
     }
-  }
-
-  // ─── Instant Messaging (text chat over the inbox channel) ───────────────
-  // IM reuses the same point-to-point inbox channel as call invitations. A
-  // chat line is just an inbox payload with type:"im", so a recipient's
-  // existing subscribeToInbox handler can branch on payload.type.
-  //
-  // Security note: the carrier is the recipient's own inbox channel keyed by
-  // their session_id. A guest therefore only ever learns an admin's
-  // session_id because that admin messaged them first — guests are never sent
-  // the admin roster and cannot enumerate or cold-message admins.
-  async function sendIM(targetSessionId, { fromId, fromName, fromRole, fromPicture, text }) {
-    return sendToInbox(targetSessionId, {
-      type: "im",
-      fromId,
-      fromName,
-      fromRole,
-      fromPicture: fromPicture || "",
-      text,
-      ts: new Date().toISOString(),
-    });
   }
 
   // ─── Call Signaling Channel ──────────────────────────────────────────────
@@ -967,8 +960,6 @@ window.Shared = (() => {
     checkMediaPermissions,
     joinPresenceChannel,
     updatePresence,
-    subscribeToInbox,
-    sendToInbox,
     announcePresence,
     guestSession,
     inviteGuest,
@@ -980,7 +971,7 @@ window.Shared = (() => {
     sendConversationMessage,
     loadTranscript,
     sendReceipt,
-    sendIM,
+    sendAgentIM,
     setupCallChannel,
     sendCallSignal,
     getIceConfig,

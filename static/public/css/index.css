@@ -584,6 +584,12 @@ td button {
   opacity: 1;
   color: #4fc3f7;
 }
+.im-tick--failed {
+  opacity: 1;
+  color: #e57373;
+  font-weight: 700;
+  cursor: help;
+}
 
 /* The bar holds the title (which toggles collapse) and the expand control. */
 .im-dock-bar {

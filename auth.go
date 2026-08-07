@@ -1003,6 +1003,7 @@ func (a *authApp) Mount(mux *http.ServeMux) {
 	// server's own call site — one place registers them, and the test harness
 	// gets them for free.
 	a.mountConversations(mux)
+	a.mountAgentIM(mux)
 
 	// public (pre-session)
 	mux.HandleFunc("GET /login", a.loginForm)

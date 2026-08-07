@@ -434,7 +434,13 @@
       refreshRestAgents();
       return { error: started.error, status: started.status };
     }
-    currentConv = { cid: started.cid, token: started.token, channel: started.channel };
+    currentConv = {
+      cid: started.cid,
+      token: started.token,
+      channel: started.channel,
+      agentName: started.agentName || "",
+      waiting: !!started.waiting,
+    };
     return currentConv;
   }
 
@@ -452,7 +458,12 @@
       onMessage: (m) => IM.receive(m),
       onReceipt: (r) => IM.applyReceipt(r),
     });
-    IM.open({ cid: conv.cid, token: conv.token, name: target.name, picture: target.picture });
+    IM.open({
+      cid: conv.cid,
+      token: conv.token,
+      name: conv.agentName || target.name,
+      picture: conv.agentName && conv.agentName !== target.name ? "" : target.picture,
+    });
     // Deliberately NO ring. Starting a chat is not placing a call: the visitor
     // types immediately, and the agent is alerted by the MESSAGE — the server
     // delivers it to their console, and pushes to a closed one, when it is
@@ -463,8 +474,8 @@
   // ─── Initiate call (guest → auth) ──────────────────────────────────────
   async function initiateCall(target, callType) {
     if (state !== "ready") return;
-    const targetName = target.name;
-    const targetPicture = target.picture || "";
+    let targetName = target.name;
+    let targetPicture = target.picture || "";
 
     // Acquire the mic (and camera for video) NOW, from this click's gesture —
     // the only permission prompt the guest ever sees, at the moment it makes
@@ -487,6 +498,10 @@
       updateCallButtons();
       showMessageForm("Nobody is taking calls right now. Please leave a message.");
       return;
+    }
+    if (conv.agentName && conv.agentName !== targetName) {
+      targetName = conv.agentName;
+      targetPicture = "";
     }
     // A call is exclusive: an agent already on one cannot pick up, so ringing
     // would just burn 30 seconds and end in "no answer". Chat is the honest
@@ -637,10 +652,6 @@
 
   // ─── Handle inbox messages (incoming calls from auth) ──────────────────
   function handleInboxMessage(data) {
-    if (data.type === "im") {
-      IM.receive(data);
-      return;
-    }
     if (data.type === "incoming-call" && (state === "ready" || state === "message-form")) {
       // If the message form is open, dismiss it so the call can take over
       if (state === "message-form") {
@@ -1270,6 +1281,7 @@
       S.loadTranscript({ ref: params.ref, cid, token }).then((res) => {
         const t = threads.get(cid);
         if (!t || !res.messages || !res.messages.length) return;
+        const carried = t.messages || [];
         t.seen = new Set();
         t.messages = res.messages.map((m) => {
           if (m.id != null) t.seen.add(m.id);
@@ -1282,6 +1294,11 @@
             readAt: m.read_at || 0,
           };
         });
+        for (const m of carried) {
+          if (m.id != null && t.seen.has(m.id)) continue;
+          if (m.id != null) t.seen.add(m.id);
+          t.messages.push(m);
+        }
         renderMessages();
       });
     }
@@ -1341,7 +1358,8 @@
       if (!conv) return;
       const res = await S.loadTranscript({ ref: params.ref, cid: conv.cid, token: conv.token });
       const t = threads.get(conv.cid);
-      if (!t || !res.messages) return;
+      if (!t || !res.messages || !res.messages.length) return;
+      const carried = t.messages || [];
       t.seen = new Set();
       t.messages = res.messages.map((m) => {
         if (m.id != null) t.seen.add(m.id);
@@ -1354,6 +1372,11 @@
           readAt: m.read_at || 0,
         };
       });
+      for (const m of carried) {
+        if (m.id != null && t.seen.has(m.id)) continue;
+        if (m.id != null) t.seen.add(m.id);
+        t.messages.push(m);
+      }
       renderMessages();
       maybeMarkRead(t); // a catch-up can deliver something now on screen
     }

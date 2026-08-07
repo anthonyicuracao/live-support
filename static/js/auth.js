@@ -1052,7 +1052,6 @@
   let iceCandidateBuffer = [];
   let waitTimeInterval = null;
   let presenceChannel = null;
-  let inboxChannel = null;
   let guestUsers = [];
   let presenceAgents = [];        // live auth members from presence (Online)
   let durableReachable = [];      // /api/agents/available (Offline·Reachable source)
@@ -1283,7 +1282,6 @@
     clearInterval(sessionRecheckTimer);
     S.updateSessionStatus(sessionId, "offline");
     if (presenceChannel) presenceChannel.unsubscribe();
-    if (inboxChannel) inboxChannel.unsubscribe();
     if (currentCallChannel) currentCallChannel.unsubscribe();
   }
   // persisted=true means the page is going into the back/forward cache and may
@@ -1443,7 +1441,7 @@
   // ─── Handle inbox messages (incoming calls from guests) ────────────────
   function handleInboxMessage(data) {
     if (data.type === "im") {
-      IM.receive(data);
+      IM.receiveAgentIM(data);
       return;
     }
     // A visitor's chat message. Not a ring: no accept/decline, no deadline, no
@@ -2178,7 +2176,7 @@
 
     if (!section) {
       // IM markup not present — expose no-op hooks so callers stay simple.
-      return { updateRoster() {}, receive() {}, open() {}, deliver() {}, restore() {}, refresh() {}, applyReceipt() {}, maybeMarkRead() {} };
+      return { updateRoster() {}, receive() {}, receiveAgentIM() {}, open() {}, deliver() {}, restore() {}, refresh() {}, applyReceipt() {}, maybeMarkRead() {} };
     }
     // The IM section is always available to admins; show the dock (collapsed,
     // tucked into the bottom-right corner until the agent opens it).
@@ -2215,12 +2213,17 @@
     function thread(peer) {
       let t = threads.get(peer.id);
       if (!t) {
-        t = { id: peer.id, name: peer.name, role: peer.role, picture: peer.picture || "", online: true, messages: [], unread: 0 };
+        t = {
+          id: peer.id, name: peer.name, role: peer.role, picture: peer.picture || "",
+          peerUserId: peer.userId || 0,
+          online: true, messages: [], unread: 0,
+        };
         threads.set(peer.id, t);
       } else {
         if (peer.name) t.name = peer.name;
         if (peer.role) t.role = peer.role;
         if (peer.picture !== undefined) t.picture = peer.picture;
+        if (peer.userId) t.peerUserId = peer.userId;
       }
       return t;
     }
@@ -2228,15 +2231,37 @@
     function updateRoster(users) {
       roster = (users || [])
         .filter((u) => u.session_id && u.session_id !== sessionId)
-        .map((u) => ({ id: u.session_id, name: u.name || "Unknown", role: u.role || "guest", picture: u.picture || "" }));
+        .map((u) => ({
+          id: u.session_id, name: u.name || "Unknown", role: u.role || "guest",
+          picture: u.picture || "", userId: u.user_id || 0,
+        }));
       const onlineIds = new Set(roster.map((u) => u.id));
+
+      const onlineUserIds = new Set(roster.filter((u) => u.userId).map((u) => u.userId));
+      for (const u of roster) {
+        if (!u.userId || threads.has(u.id)) continue;
+        let staleKey = null;
+        for (const [id, t] of threads) {
+          if (t.peerUserId === u.userId) { staleKey = id; break; }
+        }
+        if (!staleKey) continue;
+        const t = threads.get(staleKey);
+        threads.delete(staleKey);
+        t.id = u.id;
+        threads.set(u.id, t);
+        if (activePeerId === staleKey) activePeerId = u.id;
+      }
 
       // Mark threads online/offline so history still shows for someone who has
       // just left. A conversation thread resolves its liveness through the
       // visitor's session id — a cid has no presence record of its own, which
       // is why these threads were all rendering "(offline)".
       for (const [id, t] of threads) {
-        t.online = t.guestSession ? onlineIds.has(t.guestSession) : onlineIds.has(id);
+        t.online = t.guestSession
+          ? onlineIds.has(t.guestSession)
+          : t.peerUserId
+            ? onlineUserIds.has(t.peerUserId)
+            : onlineIds.has(id);
       }
       // Header label: "Chats" + a live count of people available to chat.
       if (dockTitle) {
@@ -2263,12 +2288,21 @@
       const convSessions = new Set();
       for (const [, t] of threads) if (t.guestSession) convSessions.add(t.guestSession);
 
+      const threadUserIds = new Set();
+      for (const [, t] of threads) if (t.peerUserId) threadUserIds.add(t.peerUserId);
+
       roster.forEach((u) => {
         if (convSessions.has(u.id)) return;
+        if (u.userId && threadUserIds.has(u.userId) && !threads.has(u.id)) return;
         byId.set(u.id, { ...u, online: true });
       });
       for (const [id, t] of threads) {
-        if (!byId.has(id)) byId.set(id, { id, name: t.name, role: t.role, picture: t.picture, online: t.online });
+        if (!byId.has(id)) {
+          byId.set(id, {
+            id, name: t.name, role: t.role, picture: t.picture,
+            userId: t.peerUserId || 0, online: t.online,
+          });
+        }
       }
       if (byId.size === 0) {
         const li = document.createElement("li");
@@ -2340,12 +2374,26 @@
         // and an agent with no signal has to guess whether to follow up.
         if (m.dir === "out") {
           const tick = document.createElement("span");
-          const state = m.readAt ? "read" : m.deliveredAt ? "delivered" : m.id ? "sent" : "pending";
+          const state = m.failed
+            ? "failed"
+            : m.readAt ? "read"
+            : m.deliveredAt ? "delivered"
+            : (m.id || m.sent) ? "sent"
+            : "pending";
           tick.className = "im-tick im-tick--" + state;
           tick.setAttribute("aria-label", {
-            pending: "sending", sent: "sent", delivered: "delivered", read: "read",
+            pending: "sending", sent: "sent", delivered: "delivered",
+            read: "read", failed: "not delivered",
           }[state]);
-          tick.textContent = state === "pending" ? "🕘" : state === "sent" ? "✓" : "✓✓";
+          tick.textContent =
+            state === "failed" ? "!" :
+            state === "pending" ? "🕘" :
+            state === "sent" ? "✓" : "✓✓";
+          if (m.failed) {
+            tick.title = m.failReason === "send-failed"
+              ? "Not sent — check your connection and try again."
+              : "Not delivered — they have no console open right now.";
+          }
           li.appendChild(tick);
         }
         messagesEl.appendChild(li);
@@ -2375,6 +2423,18 @@
         S.sendReceipt({ ref, cid: t.conv.cid, token: t.conv.token, upToId: m.id, kind: "delivered" });
       }
       return true;
+    }
+
+    function rebuildFromTranscript(t, messages) {
+      const carried = t.messages || [];
+      t.messages = [];
+      t.seen = new Set();
+      for (const m of messages) addMessage(t, m, m.sender === "agent" ? "out" : "in");
+      for (const m of carried) {
+        if (m.id != null && t.seen.has(m.id)) continue;
+        if (m.id != null) t.seen.add(m.id);
+        t.messages.push(m);
+      }
     }
 
     // restore(): rebuild open conversations on console start.
@@ -2428,10 +2488,8 @@
       for (const [, t] of threads) {
         if (!t.conv) continue;
         const res = await S.loadTranscript({ ref, cid: t.conv.cid, token: t.conv.token });
-        if (!res.messages) continue;
-        t.seen = new Set();
-        t.messages = [];
-        for (const m of res.messages) addMessage(t, m, m.sender === "agent" ? "out" : "in");
+        if (!res.messages || !res.messages.length) continue;
+        rebuildFromTranscript(t, res.messages);
       }
       renderMessages();
       renderRoster();
@@ -2565,21 +2623,18 @@
       S.loadTranscript({ ref, cid, token }).then((res) => {
         const t = threads.get(cid);
         if (!t || !res.messages || !res.messages.length) return;
-        // Rebuild from the record, then mark every id seen so a live broadcast
-        // that overlaps the transcript is not appended a second time.
-        t.messages = [];
-        t.seen = new Set();
-        for (const m of res.messages) {
-          addMessage(t, m, m.sender === "agent" ? "out" : "in");
-        }
+        rebuildFromTranscript(t, res.messages);
         renderMessages();
       });
     }
 
     async function send(text) {
       if (!activePeerId || !text) return;
-      const t = threads.get(activePeerId);
-      if (!t) return;
+      let t = threads.get(activePeerId);
+      if (!t) {
+        console.warn("[IM] no thread for", activePeerId, "— message not sent");
+        return;
+      }
 
       // A guest thread opened from the roster has no conversation yet — its id
       // is the visitor's presence session id, not a cid. Create one on demand
@@ -2597,6 +2652,8 @@
         });
         if (invited.error) {
           console.error("[IM] could not open a conversation with", t.name, invited);
+          t.messages.push({ dir: "out", text, ts: Date.now(), failed: true, failReason: "send-failed" });
+          renderMessages();
           return;
         }
         // Re-key this thread to the conversation id. The server returns the
@@ -2627,9 +2684,7 @@
           t.loadedTranscript = true;
           S.loadTranscript({ ref, cid: invited.cid, token: invited.token }).then((res) => {
             if (!res.messages || !res.messages.length) return;
-            t.messages = [];
-            t.seen = new Set();
-            for (const m of res.messages) addMessage(t, m, m.sender === "agent" ? "out" : "in");
+            rebuildFromTranscript(t, res.messages);
             renderMessages();
           });
         }
@@ -2648,19 +2703,50 @@
         if (saved && saved.message) {
           pending.id = saved.message.id;
           applyMarks(t, pending); // may already have been acknowledged
-          renderMessages();
+        } else {
+          pending.failed = true;
+          pending.failReason = "send-failed";
         }
+        renderMessages();
         return;
       }
-      // Guests see the public display name; fellow agents see the real name.
-      const outName = t.role === "guest" ? displayName : name;
-      await S.sendIM(activePeerId, {
-        fromId: sessionId,
-        fromName: outName,
-        fromRole: "auth",
-        fromPicture: picture, // lets the recipient render our avatar
-        text,
+      if (!t.peerUserId) {
+        pending.failed = true;
+        pending.failReason = "send-failed";
+        renderMessages();
+        return;
+      }
+      const sent = await S.sendAgentIM({ toUserId: t.peerUserId, text });
+      pending.sent = sent.ok;
+      if (sent.delivered) pending.deliveredAt = sent.ts || Date.now();
+      pending.failed = !sent.ok || !sent.delivered;
+      if (pending.failed) pending.failReason = sent.ok ? "no-console" : "send-failed";
+      renderMessages();
+    }
+
+    function receiveAgentIM(data) {
+      if (!data || !data.fromUserId || !data.body) return;
+      let key = null;
+      for (const [id, existing] of threads) {
+        if (existing.peerUserId === data.fromUserId) { key = id; break; }
+      }
+      const row = roster.find((u) => u.userId === data.fromUserId);
+      const t = thread({
+        id: key || (row ? row.id : "user:" + data.fromUserId),
+        name: (row && row.name) || (key ? undefined : data.fromName || "Agent"),
+        role: "auth",
+        picture: data.fromPicture || (row && row.picture) || undefined,
+        userId: data.fromUserId,
       });
+      t.messages.push({ dir: "in", text: data.body, ts: data.ts });
+      if (t.id !== activePeerId) t.unread = (t.unread || 0) + 1;
+      if (section.classList.contains("im-collapsed")) {
+        section.classList.remove("im-collapsed");
+      }
+      renderMessages();
+      renderRoster();
+      renderDockUnread();
+      S.notify({ title: t.name || "New message", body: data.body, tag: "im-" + data.fromUserId });
     }
 
     function receive(data) {
@@ -2691,22 +2777,6 @@
         S.notify({ title: ct.name || "New message", body: data.body || "", tag: "conv-" + data.cid });
         return;
       }
-      if (!data.fromId || !data.text) return;
-      const t = thread({ id: data.fromId, name: data.fromName, role: data.fromRole, picture: data.fromPicture });
-      t.messages.push({ dir: "in", text: data.text, ts: data.ts });
-      // Counts as "read" only if its thread is open AND the dock is expanded.
-      const visible =
-        data.fromId === activePeerId && !section.classList.contains("im-collapsed");
-      if (visible) {
-        renderMessages();
-      } else {
-        t.unread = (t.unread || 0) + 1;
-        // Surface the unread chat: pop the dock open (collapsed → expanded) so
-        // the agent sees the bolded thread without having to notice the badge.
-        section.classList.remove("im-collapsed");
-      }
-      renderRoster();
-      renderDockUnread();
     }
 
     formEl.addEventListener("submit", (e) => {
@@ -2717,7 +2787,7 @@
       send(text);
     });
 
-    return { updateRoster, receive, open, deliver, restore, refresh, applyReceipt, maybeMarkRead };
+    return { updateRoster, receive, receiveAgentIM, open, deliver, restore, refresh, applyReceipt, maybeMarkRead };
   })();
 
   // Rebuild open conversations now that IM exists. Not awaited: a slow restore
