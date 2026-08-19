@@ -1016,6 +1016,13 @@
     }
 
     S.hideSection(".call-active");
+
+    // Notify an embedding page (e.g. the in-store kiosk iframe) that the call
+    // is over so it can close the overlay. No-op when not embedded.
+    if (window.parent !== window) {
+      window.parent.postMessage("call-ended", "*");
+    }
+
     await resetToReady();
   }
 
@@ -1053,6 +1060,16 @@
 
   // ─── Message form ──────────────────────────────────────────────────────
   function showMessageForm(reason) {
+    // A kiosk (?kiosk=1, framed, no keyboard) can't use a leave-a-message
+    // form — tell the parent the session is over so it can close the overlay
+    // and return to the landing screen. Other embeds (e.g. the planned chat
+    // widget iframe) keep the form.
+    const isKiosk = new URLSearchParams(window.location.search).get("kiosk") === "1";
+    if (isKiosk && window.parent !== window) {
+      window.parent.postMessage("call-ended", "*");
+      return;
+    }
+
     state = "message-form";
 
     // Pre-fill from URL params
