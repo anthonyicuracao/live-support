@@ -708,6 +708,7 @@
     // Signal accepted — caller (auth) will send the offer
     await S.sendCallSignal(currentCallChannel, { type: "call-accepted" });
     state = "active-call";
+    notifyParent("call-started");
   });
 
   // ─── Decline incoming call ─────────────────────────────────────────────
@@ -729,6 +730,7 @@
         clearTimeout(callTimeoutTimer);
         clearRing(currentCallId);
         state = "active-call";
+        notifyParent("call-started");
         await startAsInitiator();
         break;
 
@@ -982,6 +984,13 @@
     }
 
     S.showSection(".call-active");
+  }
+
+  // ─── Embed notifications ───────────────────────────────────────────────
+  // Notify an embedding page (e.g. the in-store kiosk iframe) of call
+  // lifecycle events. No-op when not embedded.
+  function notifyParent(msg) {
+    if (window.parent !== window) window.parent.postMessage(msg, "*");
   }
 
   // ─── End call button ───────────────────────────────────────────────────
