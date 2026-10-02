@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -728,4 +729,160 @@ func TestReadReceiptsAreAPerTenantSetting(t *testing.T) {
 			t.Error("an unrecognised setting disabled read receipts")
 		}
 	})
+}
+
+// loginAgent creates an agent account via the invite flow and returns a client
+// signed in as them.
+func loginAgent(t *testing.T, srv *httptest.Server, admin *http.Client, username string) *http.Client {
+	t.Helper()
+	inviteAgent(t, srv, admin, username)
+	c := newClient(t)
+	_, page := getBody(t, c, wr(srv, "/login"))
+	postForm(t, c, wr(srv, "/login"), url.Values{
+		"csrf": {csrfFrom(t, page)}, "username": {username}, "password": {agentPW},
+	})
+	return c
+}
+
+func seedChat(t *testing.T, db *sql.DB, agentID int64, guestSession, guestName string, ended bool, bodies ...string) string {
+	t.Helper()
+	cid, _ := newConvID()
+	now := time.Now().Unix()
+	if err := createConversation(db, conversation{
+		CID: cid, Ref: testRef, GuestSession: guestSession, GuestName: guestName,
+		AgentUserID: agentID, CallType: callTypeChat, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("createConversation: %v", err)
+	}
+	for i, b := range bodies {
+		sender := convRoleGuest
+		if i%2 == 1 {
+			sender = convRoleAgent
+		}
+		if _, err := db.Exec(`INSERT INTO chat_messages (cid, sender, body, created_at) VALUES (?, ?, ?, ?)`,
+			cid, sender, b, now+int64(i)); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+	if ended {
+		if _, err := db.Exec(`UPDATE conversations SET ended_at = ? WHERE cid = ?`, now+10, cid); err != nil {
+			t.Fatalf("end: %v", err)
+		}
+	}
+	return cid
+}
+
+func historyCIDs(t *testing.T, c *http.Client, target string) ([]string, map[string]map[string]any) {
+	t.Helper()
+	status, body := getBody(t, c, target)
+	if status != 200 {
+		t.Fatalf("GET %s = %d: %s", target, status, body)
+	}
+	var res struct {
+		Conversations []map[string]any `json:"conversations"`
+		Count         int              `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ids := []string{}
+	rows := map[string]map[string]any{}
+	for _, r := range res.Conversations {
+		id, _ := r["cid"].(string)
+		ids = append(ids, id)
+		rows[id] = r
+	}
+	if res.Count != len(ids) {
+		t.Errorf("count = %d but %d rows returned on one page", res.Count, len(ids))
+	}
+	return ids, rows
+}
+
+// The console's chat history: an agent sees only their own conversations, an
+// admin sees the tenant's; the search box matches names and message text, and
+// a row says WHY it matched.
+func TestChatHistoryScopeAndSearch(t *testing.T) {
+	srv, db := newServer(t)
+	admin := loginAdmin(t, srv)
+	agent := loginAgent(t, srv, admin, "hist-agent")
+	agentID, _ := strconv.ParseInt(userIDByName(t, db, "hist-agent"), 10, 64)
+	other := mustUser(t, db, "hist-other")
+
+	mine := seedChat(t, db, agentID, "sess-aaaa1111", "Guest", true,
+		"Hi, is the store open on Sunday?", "Yes, 10 to 4.")
+	theirs := seedChat(t, db, other, "sess-bbbb2222", "Jane Doe", false,
+		"My order 100% never arrived", "Let me check.")
+
+	// Scope.
+	ids, _ := historyCIDs(t, agent, wr(srv, "/api/conversations/history"))
+	if len(ids) != 1 || ids[0] != mine {
+		t.Errorf("agent history = %v, want only their own %s", ids, mine)
+	}
+	ids, rows := historyCIDs(t, admin, wr(srv, "/api/conversations/history"))
+	if len(ids) != 2 {
+		t.Errorf("admin history = %v, want both conversations", ids)
+	}
+	if rows[theirs] != nil && rows[theirs]["open"] != true {
+		t.Errorf("open conversation not flagged open: %v", rows[theirs])
+	}
+	if rows[mine] != nil && rows[mine]["open"] != false {
+		t.Errorf("ended conversation flagged open: %v", rows[mine])
+	}
+
+	// Search by message text, case-insensitively, with the matching line.
+	ids, rows = historyCIDs(t, admin, wr(srv, "/api/conversations/history?q=SUNDAY"))
+	if len(ids) != 1 || ids[0] != mine {
+		t.Errorf("search by message = %v, want %s", ids, mine)
+	} else if m, _ := rows[mine]["match"].(string); !strings.Contains(m, "Sunday") {
+		t.Errorf("match snippet = %q, want the line containing the query", m)
+	}
+	// By name.
+	if ids, _ = historyCIDs(t, admin, wr(srv, "/api/conversations/history?q=jane")); len(ids) != 1 || ids[0] != theirs {
+		t.Errorf("search by name = %v, want %s", ids, theirs)
+	}
+	// By the session tag an anonymous "Guest" is labelled with on the console.
+	if ids, _ = historyCIDs(t, admin, wr(srv, "/api/conversations/history?q=aaaa")); len(ids) != 1 || ids[0] != mine {
+		t.Errorf("search by session tag = %v, want %s", ids, mine)
+	}
+	// LIKE wildcards are literal.
+	if ids, _ = historyCIDs(t, admin, wr(srv, "/api/conversations/history?q=100%25")); len(ids) != 1 || ids[0] != theirs {
+		t.Errorf("search for a literal %% = %v, want %s", ids, theirs)
+	}
+	if ids, _ = historyCIDs(t, admin, wr(srv, "/api/conversations/history?q=zzz_zzz")); len(ids) != 0 {
+		t.Errorf("search with no hit = %v, want nothing", ids)
+	}
+	// Scope still applies under search.
+	if ids, _ = historyCIDs(t, agent, wr(srv, "/api/conversations/history?q=order")); len(ids) != 0 {
+		t.Errorf("agent found a colleague's conversation through search: %v", ids)
+	}
+}
+
+// Reading a transcript from history is authorised by identity, and a
+// conversation the caller may not see is indistinguishable from one that does
+// not exist.
+func TestChatHistoryTranscriptOwnership(t *testing.T) {
+	srv, db := newServer(t)
+	admin := loginAdmin(t, srv)
+	agent := loginAgent(t, srv, admin, "tr-agent")
+	agentID, _ := strconv.ParseInt(userIDByName(t, db, "tr-agent"), 10, 64)
+	other := mustUser(t, db, "tr-other")
+
+	mine := seedChat(t, db, agentID, "s1", "Guest", true, "hello", "hi")
+	theirs := seedChat(t, db, other, "s2", "Guest", true, "secret")
+
+	status, body := getBody(t, agent, wr(srv, "/api/conversations/history/transcript?cid="+mine))
+	if status != 200 || !strings.Contains(body, `"hello"`) {
+		t.Errorf("own transcript = %d %s, want 200 with the messages", status, body)
+	}
+	foreign, _ := getBody(t, agent, wr(srv, "/api/conversations/history/transcript?cid="+theirs))
+	missing, _ := getBody(t, agent, wr(srv, "/api/conversations/history/transcript?cid=nope"))
+	if foreign != http.StatusNotFound || missing != foreign {
+		t.Errorf("foreign = %d, missing = %d — want both 404", foreign, missing)
+	}
+	if status, body = getBody(t, admin, wr(srv, "/api/conversations/history/transcript?cid="+theirs)); status != 200 || !strings.Contains(body, `"secret"`) {
+		t.Errorf("admin transcript = %d %s, want 200", status, body)
+	}
+	if status, _ = getBody(t, newClient(t), wr(srv, "/api/conversations/history")); status == 200 {
+		t.Error("history served to an anonymous client")
+	}
 }

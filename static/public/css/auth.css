@@ -481,3 +481,205 @@ body {
     height: auto;
   }
 }
+
+/* ─── Chats roster: who is this? ─────────────────────────────────────────
+   Most visitors arrive from a kiosk or widget as a bare "Guest", so a roster
+   of names alone is a row of identical entries. The label carries a short
+   session tag (shared.js guestLabel) and each row shows the last line said
+   and when, so two Guests are told apart by what they wrote. The sidebar is
+   widened from the guest dock's 7rem to make room for that. */
+.auth-user > .im .im-sidebar { flex: 0 0 15rem; }
+.auth-user .im-roster-item { align-items: center; }
+.auth-user .im-roster-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.auth-user .im-roster-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.auth-user .im-roster-when {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.auth-user .im-roster-meta {
+  font-size: 0.75rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth-user .im-roster-item--unread .im-roster-meta { color: #0f172a; font-weight: 600; }
+/* Thread header: name on one line, "Not signed in · started 2:14 PM" under it. */
+.auth-user .im-thread-header {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  white-space: normal;
+}
+.auth-user .im-thread-sub {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+.auth-user .im-thread-sub:empty { display: none; }
+@media (max-width: 40rem) {
+  /* The roster is a horizontal strip here; keep each chip to name + badge. */
+  .auth-user > .im .im-roster-meta,
+  .auth-user > .im .im-roster-when { display: none; }
+}
+
+/* ─── History: Chats ─────────────────────────────────────────────────────
+   A searchable list, not a table: index.css hides the first two columns of
+   every table, and a row here needs to expand to its transcript anyway. */
+.log-chats { margin-bottom: 1.5rem; }
+.log-chats .log-section-header { align-items: center; flex-wrap: wrap; }
+.chat-search {
+  flex: 1;
+  min-width: 12rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.chat-search__icon { opacity: 0.6; font-size: 0.9rem; }
+.chat-search__input {
+  flex: 1;
+  width: auto;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.chat-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.chat-row + .chat-row { border-top: 1px solid #e2e8f0; }
+.chat-row--empty { padding: 0.9rem 1rem; color: #64748b; font-size: 0.9rem; }
+.chat-row__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.6rem 0.8rem;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-decoration: none !important;
+}
+.chat-row__head:hover { background: #f8fafc; }
+.chat-row__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-row__line {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.chat-row__name {
+  font-weight: 700;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-row__pill {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  white-space: nowrap;
+}
+.chat-row__pill--open { background: #dcfce7; color: #166534; }
+.chat-row__agent { font-size: 0.78rem; color: #64748b; white-space: nowrap; }
+.chat-row__when {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.chat-row__preview {
+  font-size: 0.85rem;
+  color: #475569;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-row__preview mark,
+.chat-msg mark {
+  background: #fef08a;
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.im-msg-out mark { background: #fde68a; color: #1e293b; }
+.chat-row__count {
+  font-size: 0.72rem;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 999px;
+  min-width: 1.4rem;
+  text-align: center;
+  padding: 1px 5px;
+}
+.chat-row__chevron { color: #94a3b8; transition: transform 0.15s ease; }
+.chat-row--expanded .chat-row__chevron { transform: rotate(180deg); }
+.chat-row__body { padding: 0 0.8rem 0.8rem; background: #f8fafc; }
+.chat-transcript__meta,
+.chat-transcript__loading {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+.chat-transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 24rem;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+.chat-msg { white-space: pre-wrap; }
+.chat-msg__time {
+  display: block;
+  font-size: 0.68rem;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+@media (max-width: 560px) {
+  /* The name wins on a phone: drop the agent and the count, keep the time
+     small, and give the name a floor so "Guest K7F3" is never "Gue…". */
+  .chat-row__agent,
+  .chat-row__count { display: none; }
+  .chat-row__name { min-width: 6.5rem; }
+  .chat-row__when { font-size: 0.7rem; }
+  .chat-row__head { padding: 0.6rem; gap: 0.5rem; }
+}

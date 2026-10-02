@@ -89,6 +89,28 @@ window.Shared = (() => {
     return false;
   }
 
+  // ─── Guest labels ────────────────────────────────────────────────────────
+  // Most visitors arrive from an embedding page (a kiosk, a widget) that sets
+  // no real name, so the console sees a row of identical "Guest"s and the
+  // agent cannot tell which one just wrote. A placeholder name is therefore
+  // shown with a short tag derived from the visitor's session id: it is the
+  // same on every console and survives a reload, which an arrival number
+  // would not, and it is searchable in History.
+  const PLACEHOLDER_NAMES = new Set(["", "guest", "visitor", "unknown", "anonymous", "user"]);
+  function isPlaceholderName(name) {
+    return PLACEHOLDER_NAMES.has(String(name || "").trim().toLowerCase());
+  }
+  function guestTag(sessionId) {
+    const clean = String(sessionId || "").replace(/[^a-z0-9]/gi, "");
+    return clean ? clean.slice(0, 4).toUpperCase() : "";
+  }
+  function guestLabel(name, sessionId) {
+    const n = String(name || "").trim();
+    if (!isPlaceholderName(n)) return n;
+    const tag = guestTag(sessionId);
+    return tag ? `Guest ${tag}` : (n || "Guest");
+  }
+
   // ─── ID Generation ───────────────────────────────────────────────────────
   function generateId() {
     if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -324,6 +346,30 @@ window.Shared = (() => {
     const resp = await fetch("/api/conversations");
     if (!resp.ok) return { conversations: [] };
     return await resp.json();
+  }
+
+  // Agent side: the searchable chat record (open and ended), paginated.
+  async function listChatHistory({ q = "", page = 0, pageSize = 8 } = {}) {
+    const qs = new URLSearchParams({ q, page: String(page), pageSize: String(pageSize) });
+    try {
+      const resp = await fetch(`/api/conversations/history?${qs}`);
+      if (!resp.ok) return { conversations: [], count: 0, error: "history failed", status: resp.status };
+      return await resp.json(); // { conversations, count, page, pageSize, q }
+    } catch (e) {
+      return { conversations: [], count: 0, error: "unreachable", status: 0 };
+    }
+  }
+
+  // Agent side: one conversation's transcript from History. Read-only — no
+  // capability is issued, so looking back never hands out a way to post.
+  async function loadHistoryTranscript(cid) {
+    try {
+      const resp = await fetch(`/api/conversations/history/transcript?cid=${encodeURIComponent(cid)}`);
+      if (!resp.ok) return { messages: [], error: "not found", status: resp.status };
+      return await resp.json();
+    } catch (e) {
+      return { messages: [], error: "unreachable", status: 0 };
+    }
   }
 
   // Agent side: exchange a conversation id for this agent's capability. The
@@ -950,6 +996,9 @@ window.Shared = (() => {
     agentState,
     getUrlParams,
     ensureNameParam,
+    isPlaceholderName,
+    guestTag,
+    guestLabel,
     generateId,
     escapeHtml,
     avatarHtml,
@@ -964,6 +1013,8 @@ window.Shared = (() => {
     guestSession,
     inviteGuest,
     listConversations,
+    listChatHistory,
+    loadHistoryTranscript,
     startConversation,
     agentConversationToken,
     openConversation,

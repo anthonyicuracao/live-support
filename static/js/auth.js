@@ -983,6 +983,9 @@
   const MSG_PREVIEW_CHARS = 80; // truncate Messages list previews; click to expand
   let callsPage = 0;
   let messagesPage = 0;
+  let chatsPage = 0;
+  let chatsQuery = "";   // current History › Chats search text
+  let chatsStale = false; // chat activity arrived while History was collapsed
 
   // ─── Show main sections ────────────────────────────────────────────────
   S.showSection(".call");
@@ -993,6 +996,7 @@
     S.showSection(".logs");
     loadCallsLog(ref);
     loadMessagesLog(ref);
+    loadChatsLog(ref);
   } else {
     S.showSection(".logs");
     loadLogs(ref);
@@ -1310,7 +1314,7 @@
 
       li.innerHTML = `
         <p class="call-guest-user-data">
-          <span class="call-guest-user-name">${S.escapeHtml(guest.name)}</span>
+          <span class="call-guest-user-name">${S.escapeHtml(S.guestLabel(guest.name, guest.session_id))}</span>
           <span class="call-guest-user-status">${S.formatWaitTime(guest.online_since)}</span>
         </p>
         <ul class="call-buttons">
@@ -1493,6 +1497,7 @@
     // private channel instead of the guessable call:<callId> it used to.
     if (data.cid) {
       const t = await S.agentConversationToken(data.cid);
+      if (!t.error) data.guestSession = t.guestSession || "";
       if (t.error) {
         // Not ours, or gone. Drop the ring rather than presenting a call that
         // could never connect.
@@ -1519,25 +1524,29 @@
     }
 
     const callType = data.callType === "video" ? "video" : "audio";
+    // "Guest" alone is who most callers are; the session tag makes it the
+    // same label the Chats roster and History use for this visitor.
+    const callerLabel = S.guestLabel(data.callerName, data.guestSession || data.callerId);
+    incomingCall.callerLabel = callerLabel;
     // Ring — and if the browser blocks the audio (a console that resumed
     // Available on load has had no gesture yet, so Safari refuses to play),
     // escalate to an OS notification via the service worker, which carries the
     // system sound even when the tab is focused. Without this a re-hydrated
     // call is completely silent: just an Accept button waiting to be noticed.
     Promise.resolve(S.playRingtone()).then((rang) => {
-      if (!rang) notifyViaServiceWorker(callType, data.callerName);
+      if (!rang) notifyViaServiceWorker(callType, callerLabel);
     });
     // Backgrounded tabs throttle audio — also raise an OS notification so the
     // agent doesn't miss the call while the tab is hidden.
-    S.notifyIncomingCall("Incoming call", `${callType} call from ${data.callerName}`);
+    S.notifyIncomingCall("Incoming call", `${callType} call from ${callerLabel}`);
     // Phone-style overlay: caller name front and center, avatar initial,
     // call-type label beneath.
     const nameEl = document.getElementById("incoming-name");
-    if (nameEl) nameEl.textContent = data.callerName || "Guest";
+    if (nameEl) nameEl.textContent = callerLabel || "Guest";
     const typeEl = document.getElementById("incoming-type");
     if (typeEl) typeEl.textContent = `Incoming ${callType} call`;
     const avEl = document.getElementById("incoming-avatar");
-    if (avEl) avEl.innerHTML = S.avatarHtml(data.callerName || "?", "", "lg");
+    if (avEl) avEl.innerHTML = S.avatarHtml(callerLabel || "?", "", "lg");
 
     S.hideSection(".call");
     S.hideSection(".logs");
@@ -1767,7 +1776,7 @@
         await S.sendCallSignal(currentCallChannel, { type: "ice-candidate", candidate });
       },
       onTrack: (remoteStream) => {
-        showActiveCallUI(incomingCall.callerName, remoteStream, callType);
+        showActiveCallUI(incomingCall.callerLabel || incomingCall.callerName, remoteStream, callType);
       },
       onConnectionStateChange: async (connState) => {
         if (connState === "disconnected" || connState === "failed") await endCall(false);
@@ -1963,8 +1972,10 @@
   async function loadLogs(ref) {
     callsPage = 0;
     messagesPage = 0;
+    chatsPage = 0;
     await loadCallsLog(ref, 0);
     await loadMessagesLog(ref, 0);
+    await loadChatsLog(ref, 0);
   }
 
   function subscribeToLogChanges(ref) {
@@ -1991,6 +2002,7 @@
     const reloadAll = debounce(() => {
       loadCallsLog(ref, callsPage);
       loadMessagesLog(ref, messagesPage);
+      loadChatsLog(ref, chatsPage);
     }, 300);
     if (window.Realtime.onReconnect) window.Realtime.onReconnect(reloadAll);
     document.addEventListener("visibilitychange", () => {
@@ -2124,6 +2136,160 @@
     refreshMessagesUnread(ref);
   }
 
+  // ─── History › Chats ───────────────────────────────────────────────────
+  // The searchable chat record. Calls and contact-form notes each had a table;
+  // chats had nothing once the Chats card let a thread go, so "what did that
+  // visitor say yesterday" had no answer. Rows expand in place to the
+  // transcript, read-only (no capability is issued for an old chat).
+
+  // Epoch seconds → "2:14 PM" today, "Sep 30, 2:14 PM" otherwise.
+  function fmtWhen(ts) {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (d.toDateString() === new Date().toDateString()) return time;
+    return d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + time;
+  }
+
+  // Escape, then wrap every occurrence of the query in <mark>. Matching runs
+  // on the escaped text with an escaped query, so "&" finds "&amp;".
+  function highlight(text, q) {
+    const safe = S.escapeHtml(text || "");
+    if (!q) return safe;
+    const esc = S.escapeHtml(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return safe.replace(new RegExp(esc, "ig"), (m) => `<mark>${m}</mark>`);
+  }
+
+  // Chat activity (a message sent or received) refreshes the list — but only
+  // when History is open. A collapsed section just remembers it is stale and
+  // catches up when expanded, rather than refetching behind a closed door.
+  let chatsReloadTimer = null;
+  function scheduleChatsReload() {
+    const logs = document.querySelector(".logs");
+    if (!logs || logs.classList.contains("logs--collapsed")) { chatsStale = true; return; }
+    clearTimeout(chatsReloadTimer);
+    chatsReloadTimer = setTimeout(() => loadChatsLog(ref, chatsPage), 400);
+  }
+  const logsToggleEl = document.querySelector(".logs-toggle");
+  if (logsToggleEl) {
+    logsToggleEl.addEventListener("click", () => {
+      setTimeout(() => { if (chatsStale) scheduleChatsReload(); }, 0);
+    });
+  }
+
+  const chatSearchEl = document.getElementById("chat-history-search");
+  if (chatSearchEl) {
+    let searchTimer = null;
+    const runSearch = () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        const q = chatSearchEl.value.trim();
+        if (q === chatsQuery) return;
+        chatsQuery = q;
+        loadChatsLog(ref, 0);
+      }, 250);
+    };
+    chatSearchEl.addEventListener("input", runSearch);
+    chatSearchEl.addEventListener("search", runSearch); // the field's own clear (×)
+  }
+
+  async function loadChatsLog(ref, page = 0) {
+    const list = document.getElementById("chat-history-list");
+    if (!list) return;
+    chatsPage = page;
+    chatsStale = false;
+    const q = chatsQuery;
+    const res = await S.listChatHistory({ q, page, pageSize: LOG_PAGE_SIZE });
+    if (res.error) { console.error("[Logs] Chats:", res.error); return; }
+    if (q !== chatsQuery) return; // a newer search has since been typed
+
+    list.innerHTML = "";
+    const rows = res.conversations || [];
+    if (!rows.length) {
+      const li = document.createElement("li");
+      li.className = "chat-row chat-row--empty";
+      li.textContent = q ? `No chats match “${q}”.` : "No chats yet.";
+      list.appendChild(li);
+    }
+    for (const c of rows) {
+      const label = S.guestLabel(c.guestName, c.guestSession);
+      const last = c.lastMessage;
+      // Under a search the preview is the line that matched — the row says
+      // WHY it is here. Otherwise it is the last thing said.
+      const snippet = c.match || (last ? last.body : "");
+      const prefix = !c.match && last && last.sender === "agent" ? "You: " : "";
+      const li = document.createElement("li");
+      li.className = "chat-row" + (c.open ? " chat-row--open" : "");
+      li.dataset.cid = c.cid;
+      li.innerHTML = `
+        <button type="button" class="chat-row__head" aria-expanded="false">
+          ${S.avatarHtml(label, "")}
+          <span class="chat-row__text">
+            <span class="chat-row__line">
+              <span class="chat-row__name">${S.escapeHtml(label)}</span>
+              <span class="chat-row__pill${c.open ? " chat-row__pill--open" : ""}">${c.open ? "Open" : "Ended"}</span>
+              ${isAdmin && c.agentName ? `<span class="chat-row__agent">with ${S.escapeHtml(c.agentName)}</span>` : ""}
+              <span class="chat-row__when">${S.escapeHtml(fmtWhen(c.lastActivityAt || c.createdAt))}</span>
+            </span>
+            <span class="chat-row__preview">${
+              snippet ? S.escapeHtml(prefix) + highlight(snippet, q) : "<em>No messages</em>"
+            }</span>
+          </span>
+          <span class="chat-row__count" title="${c.messageCount || 0} message${c.messageCount === 1 ? "" : "s"}">${c.messageCount || 0}</span>
+          <span class="chat-row__chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="chat-row__body" hidden></div>
+      `;
+      const head = li.querySelector(".chat-row__head");
+      const body = li.querySelector(".chat-row__body");
+      head.addEventListener("click", async () => {
+        const expand = body.hidden;
+        body.hidden = !expand;
+        head.setAttribute("aria-expanded", String(expand));
+        li.classList.toggle("chat-row--expanded", expand);
+        if (!expand || body.dataset.loaded) return;
+        body.innerHTML = `<p class="chat-transcript__loading">Loading…</p>`;
+        const tr = await S.loadHistoryTranscript(c.cid);
+        body.dataset.loaded = "1";
+        renderHistoryTranscript(body, tr, label, q);
+      });
+      list.appendChild(li);
+    }
+    renderPagination("chats-pagination", page, res.count || 0,
+      (p) => loadChatsLog(ref, p));
+  }
+
+  function renderHistoryTranscript(body, tr, label, q) {
+    if (tr.error) {
+      body.innerHTML = `<p class="chat-transcript__loading">Could not load this chat.</p>`;
+      return;
+    }
+    const msgs = tr.messages || [];
+    body.innerHTML = "";
+    const meta = document.createElement("p");
+    meta.className = "chat-transcript__meta";
+    meta.textContent = `${label} · started ${fmtWhen(tr.createdAt)}`
+      + (tr.endedAt ? ` · ended ${fmtWhen(tr.endedAt)}` : " · still open");
+    body.appendChild(meta);
+    if (!msgs.length) {
+      const p = document.createElement("p");
+      p.className = "chat-transcript__loading";
+      p.textContent = "No messages in this chat.";
+      body.appendChild(p);
+      return;
+    }
+    const ul = document.createElement("ul");
+    ul.className = "chat-transcript";
+    for (const m of msgs) {
+      const li = document.createElement("li");
+      li.className = "chat-msg im-msg " + (m.sender === "agent" ? "im-msg-out" : "im-msg-in");
+      li.innerHTML = `<span class="chat-msg__body">${highlight(m.body, q)}</span>`
+        + `<time class="chat-msg__time">${S.escapeHtml(fmtWhen(m.created_at))}</time>`;
+      ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  }
+
   // Unread count drives the Messages header badge AND the auto-collapse: the
   // section opens when something is unread and folds away when the inbox is
   // clear. Server-side count, so it's consistent across the agent's devices.
@@ -2162,6 +2328,7 @@
     const threadEl  = section?.querySelector(".im-thread");
     const messagesEl = section?.querySelector(".im-messages");
     const nameEl    = section?.querySelector(".im-thread-name");
+    const subEl     = section?.querySelector(".im-thread-sub");
     const formEl    = section?.querySelector(".im-form");
     const inputEl   = section?.querySelector(".im-input");
     const sendBtn   = section?.querySelector(".im-send");
@@ -2208,6 +2375,36 @@
       } else {
         dockUnread.style.display = "none";
       }
+    }
+
+    // What to call someone. Agents by name; a visitor by name unless it is a
+    // placeholder ("Guest"), in which case shared.js adds the session tag so
+    // several anonymous visitors stop looking like one person.
+    function labelOf(u) {
+      if (!u) return "";
+      if (u.role === "auth") return u.name || "Agent";
+      const t = threads.get(u.id);
+      return S.guestLabel(u.name, u.guestSession || (t && t.guestSession) || u.id);
+    }
+    // Epoch ms → "2:14 PM" today, "Sep 30" otherwise. Short: it sits in a
+    // roster row.
+    function shortTime(ms) {
+      if (!ms) return "";
+      const d = new Date(ms);
+      if (d.toDateString() === new Date().toDateString()) {
+        return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      }
+      return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+    function threadSubtitle(t) {
+      if (!t) return "";
+      const parts = [];
+      if (t.role === "auth") parts.push("Colleague");
+      else if (S.isPlaceholderName(t.name)) parts.push("Visitor, not signed in");
+      const first = t.messages && t.messages.find((m) => m.ts);
+      if (first) parts.push("started " + shortTime(first.ts));
+      else if (t.conv) parts.push("no messages yet");
+      return parts.join(" · ");
     }
 
     function thread(peer) {
@@ -2301,6 +2498,7 @@
           byId.set(id, {
             id, name: t.name, role: t.role, picture: t.picture,
             userId: t.peerUserId || 0, online: t.online,
+            guestSession: t.guestSession || "",
           });
         }
       }
@@ -2326,11 +2524,26 @@
           ? `<span class="im-roster-role im-role-auth">admin</span>` : "";
         // Only authenticated users have profile pictures; guests fall back to
         // the initial placeholder.
-        const avatar = S.avatarHtml(u.name, u.role === "auth" ? u.picture : "");
+        const label = labelOf(u);
+        const avatar = S.avatarHtml(label, u.role === "auth" ? u.picture : "");
+        // Second line: the last thing said and when. This is what tells two
+        // "Guest"s apart at a glance — and what tells the agent which one is
+        // waiting on them.
+        const last = t && t.messages.length ? t.messages[t.messages.length - 1] : null;
+        const meta = last
+          ? (last.dir === "out" ? "You: " : "") + last.text
+          : (u.role === "guest" ? "No messages yet" : "");
+        const when = last ? shortTime(last.ts) : "";
         li.innerHTML = `
           ${avatar}
-          ${rolePill}
-          <span class="im-roster-name">${S.escapeHtml(u.name)}${u.online ? "" : " (offline)"}</span>
+          <span class="im-roster-text">
+            <span class="im-roster-line">
+              ${rolePill}
+              <span class="im-roster-name">${S.escapeHtml(label)}${u.online ? "" : " (offline)"}</span>
+              ${when ? `<span class="im-roster-when">${S.escapeHtml(when)}</span>` : ""}
+            </span>
+            ${meta ? `<span class="im-roster-meta">${S.escapeHtml(meta)}</span>` : ""}
+          </span>
           ${unread}
         `;
         li.addEventListener("click", () => openThread(u));
@@ -2343,7 +2556,8 @@
       activePeerId = peer.id;
       t.unread = 0;
       if (threadEl) threadEl.style.display = "";
-      nameEl.textContent = t.name + (t.online ? "" : " (offline)");
+      nameEl.textContent = labelOf(t) + (t.online ? "" : " (offline)");
+      if (subEl) subEl.textContent = threadSubtitle(t);
       inputEl.disabled = false;
       sendBtn.disabled = false;
       // Opening a thread expands the dock if it was minimized.
@@ -2358,6 +2572,7 @@
     function renderMessages() {
       messagesEl.innerHTML = "";
       const t = activePeerId ? threads.get(activePeerId) : null;
+      if (subEl) subEl.textContent = threadSubtitle(t);
       if (!t || t.messages.length === 0) {
         const li = document.createElement("li");
         li.className = "im-empty";
@@ -2593,10 +2808,11 @@
       // enough to matter — an agent mid-reply to one visitor is not watching
       // the others. Under-alerting costs more here than a redundant blip.
       S.notify({
-        title: t.name || "New message",
+        title: labelOf(t) || "New message",
         body: (data.message && data.message.body) || "",
         tag: "conv-" + cid,
       });
+      scheduleChatsReload();
     }
 
     // open(): show a conversation thread and its transcript. The agent side of
@@ -2703,6 +2919,7 @@
         if (saved && saved.message) {
           pending.id = saved.message.id;
           applyMarks(t, pending); // may already have been acknowledged
+          scheduleChatsReload();
         } else {
           pending.failed = true;
           pending.failReason = "send-failed";
@@ -2774,7 +2991,8 @@
         // above. Gating this on visibility is what made the console silent for
         // an agent sitting in front of the open conversation — the one posture
         // an agent is in most of the day.
-        S.notify({ title: ct.name || "New message", body: data.body || "", tag: "conv-" + data.cid });
+        S.notify({ title: labelOf(ct) || "New message", body: data.body || "", tag: "conv-" + data.cid });
+        scheduleChatsReload();
         return;
       }
     }

@@ -977,9 +977,190 @@ func (a *authApp) conversationReceiptHandler(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// ───────────────────────── chat history (console) ─────────────────────────
+
+// likePattern turns free text into a case-insensitive SQLite LIKE pattern,
+// escaping the wildcards so a visitor typing "100%" is searched for literally.
+func likePattern(q string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return "%" + r.Replace(q) + "%"
+}
+
+// canViewConversation decides who may READ a transcript from the console's
+// history: the agent who held it, or an admin. Read-only — unlike the token
+// endpoint it mints no capability, so looking back at a finished chat never
+// hands out a way to write into it.
+func canViewConversation(info *authInfo, c conversation) bool {
+	return info.user.Role == RoleAdmin || c.AgentUserID == info.user.ID
+}
+
+// GET /api/conversations/history?q=&page=&pageSize= (authed): the durable
+// chat record, searchable.
+//
+// /api/conversations answers "what is open right now" and exists so a
+// reloaded console can resume. This answers "what was said, ever" — the
+// question an agent has when a visitor comes back, or when someone asks what
+// happened yesterday. Open conversations are included (flagged), because the
+// search box is the fastest way to find a specific chat regardless of state.
+//
+// Scope follows the rest of the console: an admin sees every conversation on
+// the tenant, an agent only their own.
+func (a *authApp) chatHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	info := authFrom(r.Context())
+	if info == nil {
+		errJSON(w, 401, "not signed in")
+		return
+	}
+	qs := r.URL.Query()
+	page, _ := strconv.Atoi(qs.Get("page"))
+	if page < 0 {
+		page = 0
+	}
+	pageSize, _ := strconv.Atoi(qs.Get("pageSize"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 8
+	}
+	q := strings.TrimSpace(qs.Get("q"))
+	if len(q) > 200 {
+		q = q[:200]
+	}
+
+	// Only conversations that carry (or could carry) a transcript: chats, and
+	// any call whose channel also exchanged messages.
+	where := []string{`(c.call_type = 'chat' OR EXISTS (SELECT 1 FROM chat_messages m WHERE m.cid = c.cid))`}
+	args := []any{}
+	if info.user.Role != RoleAdmin {
+		where = append(where, `c.agent_user_id = ?`)
+		args = append(args, info.user.ID)
+	}
+	like := likePattern(q)
+	if q != "" {
+		// Name, session tag, or anything either side typed.
+		where = append(where, `(c.guest_name LIKE ? ESCAPE '\' OR c.guest_session LIKE ? ESCAPE '\'
+			OR EXISTS (SELECT 1 FROM chat_messages m WHERE m.cid = c.cid AND m.body LIKE ? ESCAPE '\'))`)
+		args = append(args, like, like, like)
+	}
+	whereSQL := strings.Join(where, " AND ")
+
+	var total int
+	if err := info.db.QueryRow(`SELECT COUNT(*) FROM conversations c WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		errJSON(w, 500, "query failed")
+		return
+	}
+
+	// The match snippet is the FIRST message containing the query, so the row
+	// shows why it matched rather than just that it did.
+	matchArgs := append([]any{like}, args...)
+	rows, err := info.db.Query(`
+		SELECT c.cid, c.guest_session, c.guest_name, c.agent_user_id, c.call_type,
+		       c.created_at, c.ended_at, c.last_activity_at,
+		       COALESCE(NULLIF(av.display_name, ''), u.username, '') AS agent_name,
+		       (SELECT COUNT(*) FROM chat_messages m WHERE m.cid = c.cid) AS n,
+		       (SELECT sender FROM chat_messages m WHERE m.cid = c.cid ORDER BY m.id DESC LIMIT 1),
+		       (SELECT body FROM chat_messages m WHERE m.cid = c.cid ORDER BY m.id DESC LIMIT 1),
+		       (SELECT created_at FROM chat_messages m WHERE m.cid = c.cid ORDER BY m.id DESC LIMIT 1),
+		       (SELECT body FROM chat_messages m WHERE m.cid = c.cid AND m.body LIKE ? ESCAPE '\' ORDER BY m.id LIMIT 1)
+		  FROM conversations c
+		  LEFT JOIN users u ON u.id = c.agent_user_id
+		  LEFT JOIN agent_availability av ON av.user_id = c.agent_user_id
+		 WHERE `+whereSQL+`
+		 ORDER BY c.last_activity_at DESC, c.created_at DESC
+		 LIMIT ? OFFSET ?`, append(matchArgs, pageSize, page*pageSize)...)
+	if err != nil {
+		errJSON(w, 500, "query failed")
+		return
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var cid, gs, name, ct, agentName string
+		var agentID, created, act int64
+		var ended, lastAt sql.NullInt64
+		var n int
+		var lastSender, lastBody, match sql.NullString
+		if err := rows.Scan(&cid, &gs, &name, &agentID, &ct, &created, &ended, &act,
+			&agentName, &n, &lastSender, &lastBody, &lastAt, &match); err != nil {
+			continue
+		}
+		row := map[string]any{
+			"cid": cid, "guestSession": gs, "guestName": name,
+			"agentUserId": agentID, "agentName": agentName, "callType": ct,
+			"createdAt": created, "endedAt": ended.Int64, "lastActivityAt": act,
+			"open": !ended.Valid, "messageCount": n,
+		}
+		if lastBody.Valid {
+			row["lastMessage"] = map[string]any{
+				"sender": lastSender.String, "body": safePrefix(lastBody.String, 200),
+				"created_at": lastAt.Int64,
+			}
+		}
+		if q != "" && match.Valid {
+			row["match"] = safePrefix(match.String, 200)
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, 200, map[string]any{
+		"conversations": out, "count": total, "page": page, "pageSize": pageSize, "q": q,
+	})
+}
+
+// GET /api/conversations/history/transcript?cid= (authed): one conversation's
+// transcript for the console's history view.
+//
+// Read-only and capability-free: the viewer is authorised by who they are, not
+// by a token, so reading an old chat never issues a way to post into it. A
+// conversation the caller may not see answers exactly like one that does not
+// exist, so the endpoint cannot be used to enumerate ids.
+func (a *authApp) chatHistoryTranscriptHandler(w http.ResponseWriter, r *http.Request) {
+	info := authFrom(r.Context())
+	if info == nil {
+		errJSON(w, 401, "not signed in")
+		return
+	}
+	cid := r.URL.Query().Get("cid")
+	conv, err := conversationByCID(info.db, cid)
+	if err != nil || !canViewConversation(info, conv) {
+		errJSON(w, 404, "not found")
+		return
+	}
+	showRead := readReceiptsEnabled(info.db)
+	rows, err := info.db.Query(
+		`SELECT id, sender, body, created_at, delivered_at, read_at
+		   FROM chat_messages WHERE cid = ? ORDER BY id`, cid)
+	if err != nil {
+		errJSON(w, 500, "query failed")
+		return
+	}
+	defer rows.Close()
+	msgs := []map[string]any{}
+	for rows.Next() {
+		var id, created int64
+		var delivered, read sql.NullInt64
+		var sender, body string
+		if err := rows.Scan(&id, &sender, &body, &created, &delivered, &read); err != nil {
+			continue
+		}
+		readAt := read.Int64
+		if !showRead {
+			readAt = 0
+		}
+		msgs = append(msgs, map[string]any{
+			"id": id, "sender": sender, "body": body, "created_at": created,
+			"delivered_at": delivered.Int64, "read_at": readAt,
+		})
+	}
+	writeJSON(w, 200, map[string]any{
+		"cid": conv.CID, "guestName": conv.GuestName, "guestSession": conv.GuestSession,
+		"callType": conv.CallType, "createdAt": conv.CreatedAt, "endedAt": conv.EndedAt.Int64,
+		"open": !conv.EndedAt.Valid, "messages": msgs,
+	})
+}
+
 func (a *authApp) mountConversations(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversation/receipt", a.conversationReceiptHandler)
 	mux.Handle("GET /api/conversations", a.authedJSON(a.conversationsListHandler))
+	mux.Handle("GET /api/conversations/history", a.authedJSON(a.chatHistoryHandler))
+	mux.Handle("GET /api/conversations/history/transcript", a.authedJSON(a.chatHistoryTranscriptHandler))
 	mux.HandleFunc("POST /api/guest/session", a.guestSessionHandler)
 	mux.Handle("POST /api/conversation/invite", a.authedJSON(a.conversationInviteHandler))
 	mux.HandleFunc("POST /api/conversation/start", a.conversationStartHandler)

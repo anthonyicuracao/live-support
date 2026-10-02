@@ -226,6 +226,10 @@
             <div class="im-thread">
               <div class="im-thread-header">
                 <span class="im-thread-name">Select someone to chat</span>
+                <!-- Who this is, beyond the name: "Not signed in · started
+                     2:14 PM". Most visitors arrive as a bare "Guest", so the
+                     name alone says nothing. Written by auth.js. -->
+                <span class="im-thread-sub"></span>
               </div>
               <ul class="im-messages">
                 <!-- Populated by JS -->
@@ -307,6 +311,31 @@
           <span class="logs-chevron" aria-hidden="true">▾</span>
         </button>
         <div class="logs-body">
+          <!-- Chats: the durable chat record (open and ended), newest first.
+               The search box matches a visitor's name, their session tag
+               (the "7F3A" in "Guest 7F3A") and anything either side typed;
+               a row expands in place to its transcript. Agents see their own
+               chats, admins every chat on the tenant. -->
+          <section class="log-chats">
+            <div class="log-section-header">
+              <h2>Chats</h2>
+              <label class="chat-search">
+                <span class="chat-search__icon" aria-hidden="true">🔍</span>
+                <input
+                  type="search"
+                  id="chat-history-search"
+                  class="chat-search__input"
+                  placeholder="Search by name, tag or message…"
+                  autocomplete="off"
+                  aria-label="Search chat history"
+                />
+              </label>
+            </div>
+            <ul class="chat-history" id="chat-history-list">
+              <!-- Rows populated by JS -->
+            </ul>
+            <div class="log-pagination" id="chats-pagination"></div>
+          </section>
           <!-- Calls -->
           <section class="log-calls">
             <div class="log-section-header">
