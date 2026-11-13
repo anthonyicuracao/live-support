@@ -344,6 +344,7 @@ func callRingHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, "bad json")
 		return
 	}
+	body.Ref = resolveRef(body.Ref)
 	if body.Ref == "" || body.CID == "" {
 		errJSON(w, 400, "missing fields")
 		return

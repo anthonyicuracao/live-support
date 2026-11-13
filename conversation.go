@@ -387,6 +387,7 @@ func (a *authApp) conversationStartHandler(w http.ResponseWriter, r *http.Reques
 		errJSON(w, 400, "bad json")
 		return
 	}
+	body.Ref = resolveRef(body.Ref)
 	if body.Ref == "" || body.GuestSession == "" {
 		errJSON(w, 400, "missing fields")
 		return
@@ -534,6 +535,7 @@ func (a *authApp) conversationEndHandler(w http.ResponseWriter, r *http.Request)
 		errJSON(w, 403, "forbidden")
 		return
 	}
+	body.Ref = resolveRef(body.Ref)
 	if !dbs.exists(body.Ref) {
 		errJSON(w, 404, "unknown tenant")
 		return
@@ -557,6 +559,10 @@ func authConv(ref, cid, token string) (*sql.DB, conversation, bool) {
 	if err != nil || cid == "" || t.CID != cid {
 		return nil, zero, false
 	}
+	// Resolved here because this is where the transcript endpoints' ref is
+	// first used: a visitor still on an alias domain names the alias, while the
+	// conversation was stored under the real one.
+	ref = resolveRef(ref)
 	if !dbs.exists(ref) {
 		return nil, zero, false
 	}
@@ -750,6 +756,7 @@ func (a *authApp) guestSessionHandler(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, 400, "bad json")
 		return
 	}
+	body.Ref = resolveRef(body.Ref)
 	if body.Ref == "" || !dbs.exists(body.Ref) {
 		errJSON(w, 404, "unknown tenant")
 		return

@@ -477,6 +477,14 @@ func (p *dbPool) get(ref string) (*sql.DB, error) {
 	if key == "" {
 		return nil, fmt.Errorf("invalid ref")
 	}
+	// An alias never has a database of its own. Refs are resolved where they
+	// enter (see alias.go), so reaching here with one means some entry point
+	// skipped that step — and failing is the loud outcome. Opening it would
+	// CREATE a second tenant under the alias's name, which is the exact split
+	// aliases exist to prevent, and nothing would ever report it.
+	if isRefAlias(key) {
+		return nil, fmt.Errorf("ref is an alias")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if d, ok := p.dbs[key]; ok {
@@ -496,8 +504,8 @@ func (p *dbPool) get(ref string) (*sql.DB, error) {
 // tenant DBs for unknown/guessed refs.
 func (p *dbPool) exists(ref string) bool {
 	key := safeRefFile(ref)
-	if key == "" {
-		return false
+	if key == "" || isRefAlias(key) {
+		return false // an alias is never a tenant, even with a leftover file
 	}
 	p.mu.Lock()
 	_, cached := p.dbs[key]
@@ -528,6 +536,9 @@ func (p *dbPool) all() []*sql.DB {
 			continue
 		}
 		key := strings.TrimSuffix(name, ".db")
+		if isRefAlias(key) {
+			continue // a leftover database for a name that is now an alias
+		}
 		if d, ok := cached[key]; ok {
 			out = append(out, d)
 			seen[key] = true
@@ -549,7 +560,7 @@ func (p *dbPool) all() []*sql.DB {
 		seen[key] = true
 	}
 	for k, d := range cached {
-		if !seen[k] {
+		if !seen[k] && !isRefAlias(k) {
 			out = append(out, d)
 		}
 	}
@@ -1053,6 +1064,10 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		if err := wsjson.Read(ctx, ws, &msg); err != nil {
 			return
 		}
+		// Aliases first, as everywhere else: a visitor who arrived on an alias
+		// domain announces itself on presence:<alias>, and must land on the
+		// channel the tenant's agents are actually reading.
+		msg.Channel = resolveChannel(msg.Channel)
 		switch msg.Action {
 		case "auth":
 			// Present a capability token to unlock its conversation channel.
@@ -1319,6 +1334,7 @@ func sessionsHandler(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, 400, "bad json")
 			return
 		}
+		s.Ref = resolveRef(s.Ref)
 		if s.SessionID == "" || s.Ref == "" {
 			errJSON(w, 400, "session_id and ref required")
 			return
@@ -1493,6 +1509,7 @@ func callsHandler(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, 400, "bad json")
 			return
 		}
+		c.Ref = resolveRef(c.Ref)
 		if c.CallID == "" || c.Ref == "" {
 			errJSON(w, 400, "call_id and ref required")
 			return
@@ -1635,6 +1652,7 @@ func messagesHandler(w http.ResponseWriter, r *http.Request) {
 			errJSON(w, 400, "bad json")
 			return
 		}
+		m.Ref = resolveRef(m.Ref)
 		if m.MessageID == "" || m.Ref == "" || m.Message == "" {
 			errJSON(w, 400, "message_id, ref and message required")
 			return
@@ -2016,6 +2034,9 @@ func main() {
 	if err != nil {
 		log.Fatal("init db pool:", err)
 	}
+	// Domain aliases (alias.go). Loaded before anything can serve a request, so
+	// there is no window in which an alias is treated as a tenant of its own.
+	loadRefAliases(os.Getenv("REF_ALIASES"), dataDir)
 	hub = newHub()
 
 	mux := http.NewServeMux()
@@ -2249,7 +2270,7 @@ func main() {
 	}
 	log.Printf("[Server] Data dir (one SQLite DB per ref): %s", dataDir)
 	log.Printf("[Server] Listening on %s:%s", bindAddr, port)
-	log.Fatal(http.ListenAndServe(bindAddr+":"+port, mux))
+	log.Fatal(http.ListenAndServe(bindAddr+":"+port, resolveAliases(mux)))
 }
 
 // isLocalOrPrivateRequest reports whether a request arrived from a loopback or

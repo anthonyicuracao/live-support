@@ -784,7 +784,10 @@ func decodeSessionCookie(v string) (ref, rawToken string, ok bool) {
 	if err != nil || len(refBytes) == 0 {
 		return "", "", false
 	}
-	return string(refBytes), v[dot+1:], true
+	// A cookie issued before a domain became an alias still names it. Resolved
+	// so the ref a session carries is always a real tenant; such a session is
+	// simply not found there, and the agent signs in again.
+	return resolveRef(string(refBytes)), v[dot+1:], true
 }
 
 // ───────────────────────── templates ───────────────────────────────────────
@@ -1281,7 +1284,9 @@ func refFromRequest(r *http.Request) string {
 	if ref == "" {
 		ref = strings.TrimSpace(r.PostFormValue("ref"))
 	}
-	return ref
+	// The query string is already resolved by resolveAliases; a domain typed
+	// into the sign-in form arrives in the body and is resolved here.
+	return resolveRef(ref)
 }
 
 // tenantDB resolves the ref to an EXISTING tenant DB, returning nil if the ref

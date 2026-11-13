@@ -68,6 +68,11 @@ func parseAppliance(secret, tok string) (secContext, string, error) {
 	if sec.Exp != 0 && time.Now().Unix() > sec.Exp {
 		return secContext{}, "", errBadAppliance
 	}
+	// The platform may know this tenant by one of its alias domains. Resolved
+	// here, on the way out of the only function that reads a token, so /sso and
+	// /provision both land in the real tenant instead of creating the alias as
+	// a second one.
+	sec.Ref = resolveRef(sec.Ref)
 	return sec, payload, nil
 }
 

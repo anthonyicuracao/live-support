@@ -60,7 +60,9 @@ func newServer(t *testing.T) (*httptest.Server, *sql.DB) {
 	theApp = a
 	mux := http.NewServeMux()
 	a.Mount(mux)
-	srv := httptest.NewServer(mux)
+	// Wrapped as main() wraps it, so alias tests exercise the real entry point.
+	// With no aliases configured it passes every request straight through.
+	srv := httptest.NewServer(resolveAliases(mux))
 	t.Cleanup(srv.Close)
 
 	tdb, err := dbs.get(testRef)

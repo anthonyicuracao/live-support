@@ -120,6 +120,18 @@ The second is for self-hosted boxes with no platform to SSO from, and needs no e
 
 Refs are **case-insensitive**, since they are domains. `Example.com` and `example.com` are the same tenant. Mixed-case database files created before this are renamed to lower case at startup, unless a lower-case file already exists — then both are left alone and the collision is logged, because choosing one would discard the other's history.
 
+**Domain aliases** — a vendor with more than one domain is still one tenant. Set `REF_ALIASES` to comma-separated `alias=domain` pairs and each alias reaches the tenant it points at:
+
+```
+REF_ALIASES=account.example.com=example.com
+```
+
+An alias is looked up **first**, before the ref is used for anything, and replaced by the domain it points at. From there the request is identical to one that named the real domain, so guests and agents arriving on either one share the same users, history and live presence. This covers every way a ref arrives: `?ref=` links, the sign-in form, API request bodies, SSO and provisioning tokens, and realtime channels.
+
+- Point an alias at the real domain, not at another alias. Chains and loops are logged and ignored.
+- An alias never gets a database of its own. If one already exists under that name (the domain was a separate tenant before), startup logs a warning and that database is no longer served — it is not deleted or merged. Merge it into the real tenant's database or move it aside.
+- Changes take effect on restart.
+
 **First run (per tenant)** — a tenant reached over SSO gets an initial admin account from `ADMIN_USERNAME` / `ADMIN_INITIAL_PASSWORD`. If no password is configured, a temporary one is generated and printed to the server log; it must be changed on first login.
 
 **Platform SSO (optional)** — an external platform that knows the deployment's `CONNECT_SECRET` can mint short-lived signed links that sign a user straight into the dashboard, no second login:
